@@ -27,6 +27,7 @@ class MajsoulClient:
         self.fast_test: FastTest | None = None
         self.account_id: int = 0
         self.nickname: str = ""
+        self.access_token: str = ""
         self.version: str = ""
         self._game_channel: MSRPCChannel | None = None
         self._event_handlers: dict[str, list] = {}
@@ -113,6 +114,7 @@ class MajsoulClient:
             return False
 
         self.account_id = res.account_id
+        self.access_token = res.access_token
         self.nickname = res.account.nickname if res.account else ""
         logger.info(f"登录成功! ID: {self.account_id}, 昵称: {self.nickname}")
         return True
