@@ -14,8 +14,12 @@ match:
 
 # AI 设置
 ai:
-  # AI 类型: basic (基础规则AI)
+  # AI 类型: basic (基础规则AI), mjai_subprocess (mjai子进程), mjai_http (mjai HTTP)
   type: "basic"
+  # mjai_subprocess 模式: AI 程序命令
+  # command: ["python", "path/to/mortal/bot.py"]
+  # mjai_http 模式: AI 服务器地址
+  # url: "http://127.0.0.1:7331"
 
 # 运行设置
 run:

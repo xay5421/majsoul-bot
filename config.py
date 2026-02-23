@@ -19,7 +19,9 @@ class MatchConfig:
 
 @dataclass
 class AIConfig:
-    type: str = "basic"
+    type: str = "basic"      # basic, mjai_subprocess, mjai_http
+    command: str = ""         # mjai_subprocess: AI 程序命令
+    url: str = ""             # mjai_http: AI 服务器地址
 
 
 @dataclass
