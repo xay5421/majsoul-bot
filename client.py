@@ -47,20 +47,27 @@ class MajsoulClient:
                 f"{MS_HOST}/1/v{self.version}/config.json"
             ) as res:
                 config = await res.json()
-                # 从 gateways 列表中随机选一个路由
                 gateways = config["ip"][0]["gateways"]
-                gateway = random.choice(gateways)
-                gateway_url = gateway["url"]
-                logger.info(f"路由网关: {gateway_url}")
+                logger.info(f"路由网关数: {len(gateways)}")
 
-            # 获取 WebSocket 网关列表
+            # 通过路由 API 获取可用节点
+            gateway = random.choice(gateways)
+            gateway_url = gateway["url"]
             async with session.get(
-                f"{gateway_url}?service=ws-gateway&protocol=ws&ssl=true"
+                f"{gateway_url}/api/clientgate/routes"
+                f"?platform=Web&version={version_clean}"
             ) as res:
-                servers_info = await res.json()
-                servers = servers_info["servers"]
-                server = random.choice(servers)
-                endpoint = f"wss://{server}/gateway"
+                route_data = await res.json()
+                routes = route_data["data"]["routes"]
+                # 选一个空闲的路由
+                idle_routes = [r for r in routes if r["state"] == "idle"]
+                if not idle_routes:
+                    idle_routes = routes
+                route = random.choice(idle_routes)
+                domain = route["domain"]
+                ssl = route.get("ssl", True)
+                scheme = "wss" if ssl else "ws"
+                endpoint = f"{scheme}://{domain}/"
 
         logger.info(f"连接网关: {endpoint}")
         self.channel = MSRPCChannel(endpoint)

@@ -52,30 +52,26 @@ async def main():
             gateways = config["ip"][0]["gateways"]
             logger.info(f"  路由网关数: {len(gateways)}")
 
-        # Step 3: 查找可用的 WebSocket 网关
-        logger.info("Step 3: 查找 WebSocket 网关...")
-        ws_servers = None
-        for gw in gateways:
-            url = gw["url"]
-            try:
-                async with session.get(
-                    f"{url}?service=ws-gateway&protocol=ws&ssl=true"
-                ) as res:
-                    data = await res.json()
-                    ws_servers = data.get("servers", [])
-                    logger.info(f"  ✅ {gw['id']}: {len(ws_servers)} 个网关")
-                    break
-            except Exception as e:
-                logger.warning(f"  ❌ {gw['id']}: {type(e).__name__}")
+        # Step 3: 查找可用的路由节点
+        logger.info("Step 3: 查询路由节点...")
+        gateway = random.choice(gateways)
+        gateway_url = gateway["url"]
+        async with session.get(
+            f"{gateway_url}/api/clientgate/routes"
+            f"?platform=Web&version={version_clean}"
+        ) as res:
+            route_data = await res.json()
+            routes = route_data["data"]["routes"]
+            idle_routes = [r for r in routes if r["state"] == "idle"]
+            if not idle_routes:
+                idle_routes = routes
+            logger.info(f"  可用路由: {len(idle_routes)} 个")
 
-        if not ws_servers:
-            logger.error("所有路由网关都不可用!")
-            logger.error("可能是网络问题，请检查是否能访问 route-*.maj-soul.com")
-            return
-
-        # Step 4: 连接 WebSocket
-        server = random.choice(ws_servers)
-        endpoint = f"wss://{server}/gateway"
+        route = random.choice(idle_routes)
+        domain = route["domain"]
+        ssl = route.get("ssl", True)
+        scheme = "wss" if ssl else "ws"
+        endpoint = f"{scheme}://{domain}/"
         logger.info(f"Step 4: 连接 WebSocket: {endpoint}")
 
         channel = MSRPCChannel(endpoint)
