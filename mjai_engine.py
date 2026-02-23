@@ -150,6 +150,37 @@ class MjaiHTTPAI(MjaiAI):
             return None
 
 
+class MjaiMortalAI(MjaiAI):
+    """Mortal 本地推理模式 — 直接加载模型权重"""
+
+    def __init__(self, seat: int = 0):
+        self._seat = seat
+        self._bot = None
+
+    async def start(self) -> None:
+        from mortal_ai import check_mortal_available, load_mortal_bot
+        ok, msg = check_mortal_available()
+        if not ok:
+            raise RuntimeError(f"Mortal 不可用: {msg}")
+        self._bot = load_mortal_bot(self._seat)
+
+    async def stop(self) -> None:
+        self._bot = None
+
+    async def react(self, events: list[dict]) -> dict | None:
+        if not self._bot:
+            return None
+
+        # 检查 start_game 事件更新 seat
+        for e in events:
+            if e.get("type") == "start_game" and "id" in e:
+                self._seat = e["id"]
+                from mortal_ai import load_mortal_bot
+                self._bot = load_mortal_bot(self._seat)
+
+        return self._bot.react(events)
+
+
 class MjaiAdapter(BaseAI):
     """将 mjai AI 引擎适配为 BaseAI 接口
 

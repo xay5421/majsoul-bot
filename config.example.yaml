@@ -14,7 +14,8 @@ match:
 
 # AI 设置
 ai:
-  # AI 类型: basic (基础规则AI), mjai_subprocess (mjai子进程), mjai_http (mjai HTTP)
+  # AI 类型: basic (基础规则AI), mortal (Mortal本地推理),
+  #          mjai_subprocess (mjai子进程), mjai_http (mjai HTTP)
   type: "basic"
   # mjai_subprocess 模式: AI 程序命令
   # command: ["python", "path/to/mortal/bot.py"]
