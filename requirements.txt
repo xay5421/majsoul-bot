@@ -1,0 +1,4 @@
+protobuf>=4.22
+websockets>=12.0
+aiohttp>=3.9
+pyyaml>=6.0

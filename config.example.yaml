@@ -1,0 +1,27 @@
+# 雀魂账号配置
+account:
+  username: ""
+  password: ""
+
+# 匹配设置
+match:
+  # 模式: rank (段位赛), casual (休闲赛), room (友人房)
+  mode: "rank"
+  # 房间类型: 4e (四人东), 4s (四人南), 3e (三人东), 3s (三人南)
+  room_type: "4e"
+  # 段位场: copper (铜之间), silver (银之间), gold (金之间)
+  level: "copper"
+
+# AI 设置
+ai:
+  # AI 类型: basic (基础规则AI)
+  type: "basic"
+
+# 运行设置
+run:
+  # 连续打几局后停止 (0 = 不限)
+  max_games: 1
+  # 每局之间等待秒数
+  game_interval: 5
+  # 日志级别: DEBUG, INFO, WARNING
+  log_level: "INFO"
