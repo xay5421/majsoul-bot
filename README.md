@@ -17,6 +17,17 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### 2. （可选）安装 Mortal AI
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install numpy
+
+bash download_mortal.sh
+```
+
+自动检测系统和 Python 版本，下载对应的模型权重和推理引擎。
+
 ### 2. 配置
 
 ```bash
@@ -91,13 +102,11 @@ ai:
    pip install numpy
    ```
 
-2. 获取模型文件，放到 `mortal/` 目录下：
-   - `mortal.pth` — 模型权重（~5MB），可从 [Akagi](https://github.com/shinkuan/Akagi) 仓库获取
-   - `libriichi.so` — Rust 编译的推理引擎（~21MB），需匹配你的系统和 Python 版本
-     - Linux x86_64: `libriichi-3.1X-x86_64-unknown-linux-gnu.so`
-     - macOS ARM: `libriichi-3.1X-aarch64-apple-darwin.so`
-     - Windows: `libriichi-3.1X-x86_64-pc-windows-msvc.pyd`
-   - 重命名为 `libriichi.so`（Linux/macOS）或 `libriichi.pyd`（Windows）
+2. 下载模型文件：
+   ```bash
+   bash download_mortal.sh
+   ```
+   脚本会自动下载 `mortal.pth`、`libriichi.so` 和相关代码到 `mortal/` 目录。
 
 3. 配置：
    ```yaml
