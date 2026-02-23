@@ -13,9 +13,17 @@ from torch.distributions import Normal, Categorical
 from typing import *
 from functools import partial
 from itertools import permutations
-from .libriichi.mjai import Bot
-from .libriichi.consts import obs_shape, oracle_obs_shape, ACTION_SPACE, GRP_SIZE
-from .logger import logger
+
+# 支持两种导入方式：作为包的子模块 或 直接运行
+try:
+    from .libriichi.mjai import Bot
+    from .libriichi.consts import obs_shape, oracle_obs_shape, ACTION_SPACE, GRP_SIZE
+    from .logger import logger
+except ImportError:
+    from libriichi.mjai import Bot
+    from libriichi.consts import obs_shape, oracle_obs_shape, ACTION_SPACE, GRP_SIZE
+    import logging
+    logger = logging.getLogger("mortal.model")
 
 # ========== Online Server =========== #
 OT_REQUEST_TIMEOUT = 2
