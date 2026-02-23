@@ -11,6 +11,7 @@ from client import MajsoulClient
 from config import load_config
 from game_state import GameState
 from ai.basic import BasicAI
+from human_like import HumanBehavior
 
 logger = logging.getLogger("majsoul")
 
@@ -22,6 +23,7 @@ class MajsoulBot:
         self.config = load_config(config_path)
         self.client = MajsoulClient()
         self.ai = BasicAI()
+        self.human = HumanBehavior()
         self.game_state: GameState | None = None
         self.games_played = 0
         self._running = True
@@ -112,6 +114,7 @@ class MajsoulBot:
         player_count = 4 if "4" in self.config.match.room_type else 3
         self.game_state = GameState(seat, player_count)
         self._in_game = True
+        self.human.on_game_start()
         self.ai.on_game_start(self.game_state)
         logger.info(f"对局开始! 座位={seat}")
 
@@ -153,6 +156,7 @@ class MajsoulBot:
 
         gs = self.game_state
         gs.new_round(d)
+        self.human.on_round_start()
         self.ai.on_round_start(gs)
 
         # 如果有等待的操作（庄家第一巡）
@@ -275,19 +279,22 @@ class MajsoulBot:
             )
 
         # 确认进入下一局
-        await asyncio.sleep(1)
+        delay = self.human.get_new_round_delay()
+        await asyncio.sleep(delay)
         await self.client.confirm_new_round()
 
     async def _handle_notile(self, data: bytes) -> None:
         """流局"""
         logger.info("流局")
-        await asyncio.sleep(1)
+        delay = self.human.get_new_round_delay()
+        await asyncio.sleep(delay)
         await self.client.confirm_new_round()
 
     async def _handle_liuju(self, data: bytes) -> None:
         """中途流局（九种九牌等）"""
         logger.info("中途流局")
-        await asyncio.sleep(1)
+        delay = self.human.get_new_round_delay()
+        await asyncio.sleep(delay)
         await self.client.confirm_new_round()
 
     async def _on_game_end(self, data: bytes) -> None:
@@ -308,13 +315,13 @@ class MajsoulBot:
         operation = gs.pending_operation
         gs.pending_operation = None
 
-        # 模拟思考时间
-        await asyncio.sleep(random.uniform(1.0, 3.0))
-
         action = self.ai.decide_action(gs, operation)
 
         if action is None:
-            # 跳过
+            # 跳过 — 也要模拟思考时间
+            delay = self.human.get_skip_delay()
+            logger.debug(f"跳过操作 (等待 {delay:.1f}s)")
+            await asyncio.sleep(delay)
             await self.client.skip_action()
             # 如果有出牌操作（type=1），需要出牌
             op_list = operation.get("operation_list", [])
@@ -324,12 +331,20 @@ class MajsoulBot:
             return
 
         action_type = action.get("type", 0)
+        self.human.on_action()
 
         if action_type in [8, 9]:
             # 自摸/荣和
+            call = "tsumo" if action_type == 8 else "ron"
+            delay = self.human.get_call_delay(call)
+            logger.debug(f"和牌 (等待 {delay:.1f}s)")
+            await asyncio.sleep(delay)
             await self.client.win(action_type)
         elif action_type == 7:
             # 立直
+            delay = self.human.get_riichi_delay()
+            logger.debug(f"立直 (等待 {delay:.1f}s)")
+            await asyncio.sleep(delay)
             tile = action.get("tile", "")
             if not tile:
                 tile = self.ai.decide_discard(gs)
@@ -337,14 +352,22 @@ class MajsoulBot:
             await self.client.discard_tile(tile, is_riichi=True, moqie=is_moqie)
         elif action_type in [2, 3, 5]:
             # 吃碰杠
+            call = {2: "chi", 3: "pon", 5: "kan"}.get(action_type, "pon")
+            delay = self.human.get_call_delay(call)
+            logger.debug(f"{call} (等待 {delay:.1f}s)")
+            await asyncio.sleep(delay)
             combination = action.get("combination", [])
             await self.client.chi_peng_gang(action_type, combination)
         elif action_type in [4, 6]:
             # 暗杠/加杠
+            delay = self.human.get_call_delay("kan")
+            logger.debug(f"杠 (等待 {delay:.1f}s)")
+            await asyncio.sleep(delay)
             combination = action.get("combination", [])
             await self.client.chi_peng_gang(action_type, combination)
         else:
             logger.warning(f"未知操作类型: {action_type}")
+            await asyncio.sleep(self.human.get_skip_delay())
             await self.client.skip_action()
 
     async def _do_discard(self) -> None:
@@ -353,11 +376,18 @@ class MajsoulBot:
         if not gs:
             return
 
-        # 模拟思考时间
-        await asyncio.sleep(random.uniform(0.5, 2.0))
-
         tile = self.ai.decide_discard(gs)
         is_moqie = (tile == gs.draw)
+
+        # 人类化延迟
+        delay = self.human.get_discard_delay(
+            is_tsumogiri=is_moqie,
+            hand_size=len(gs.hand),
+            is_riichi=gs.players[gs.seat].riichi,
+        )
+        logger.debug(f"出牌 {'摸切' if is_moqie else '手切'} (等待 {delay:.1f}s)")
+        await asyncio.sleep(delay)
+        self.human.on_action()
         await self.client.discard_tile(tile, moqie=is_moqie)
 
 
