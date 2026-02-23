@@ -12,6 +12,7 @@ from config import load_config
 from game_state import GameState
 from ai.basic import BasicAI
 from human_like import HumanBehavior
+import display
 
 logger = logging.getLogger("majsoul")
 
@@ -158,6 +159,7 @@ class MajsoulBot:
         gs.new_round(d)
         self.human.on_round_start()
         self.ai.on_round_start(gs)
+        display.show_round_start(gs)
 
         # 如果有等待的操作（庄家第一巡）
         operation = d.get("operation")
@@ -180,7 +182,8 @@ class MajsoulBot:
         gs = self.game_state
         gs.on_draw(seat, tile)
 
-        # 检查新宝牌
+        if seat == gs.seat:
+            display.show_draw(gs, tile)        # 检查新宝牌
         doras = d.get("doras", [])
         for dora in doras:
             if dora not in gs.dora_indicators:
@@ -208,8 +211,7 @@ class MajsoulBot:
 
         gs = self.game_state
         gs.on_discard(seat, tile, is_draw, is_riichi)
-
-        # 是否有操作可以执行（吃碰杠荣和）
+        display.show_discard(gs, seat, tile, is_tsumogiri=is_draw, is_riichi=is_riichi)        # 是否有操作可以执行（吃碰杠荣和）
         operation = d.get("operation")
         if operation:
             gs.pending_operation = operation
@@ -228,8 +230,8 @@ class MajsoulBot:
 
         gs = self.game_state
         gs.on_chi_peng_gang(seat, type_, tiles, froms)
-
-        # 吃碰后需要出牌
+        type_names = {0: "吃", 1: "碰", 2: "杠"}
+        display.show_call(gs, seat, type_names.get(type_, "?"), tiles)        # 吃碰后需要出牌
         operation = d.get("operation")
         if operation and seat == gs.seat:
             gs.pending_operation = operation
@@ -266,17 +268,26 @@ class MajsoulBot:
         d = MessageToDict(msg, preserving_proto_field_name=True)
 
         hules = d.get("hules", [])
+        scores = None
         for h in hules:
             seat = h.get("seat", 0)
             point_rong = h.get("point_rong", 0)
             point_zimo = h.get("point_zimo_qin", 0) or h.get("point_zimo_xian", 0)
+            is_tsumo = point_rong == 0
             fans = h.get("fans", [])
             fan_names = [f.get("name", "") for f in fans]
+            hu_tile = h.get("hu_tile", "")
             logger.info(
                 f"🎉 玩家{seat}和了! "
-                f"{'荣和' if point_rong else '自摸'} "
+                f"{'自摸' if is_tsumo else '荣和'} "
                 f"役: {', '.join(fan_names)}"
             )
+            display.show_win(gs, seat, hu_tile, is_tsumo=is_tsumo)
+
+        # 更新分数
+        score_info = d.get("scores", d.get("delta_scores", []))
+        if score_info:
+            logger.debug(f"分数变动: {score_info}")
 
         # 确认进入下一局
         delay = self.human.get_new_round_delay()
@@ -286,6 +297,7 @@ class MajsoulBot:
     async def _handle_notile(self, data: bytes) -> None:
         """流局"""
         logger.info("流局")
+        display.show_ryuukyoku(self.game_state, "荒牌流局")
         delay = self.human.get_new_round_delay()
         await asyncio.sleep(delay)
         await self.client.confirm_new_round()
@@ -293,6 +305,7 @@ class MajsoulBot:
     async def _handle_liuju(self, data: bytes) -> None:
         """中途流局（九种九牌等）"""
         logger.info("中途流局")
+        display.show_ryuukyoku(self.game_state, "中途流局")
         delay = self.human.get_new_round_delay()
         await asyncio.sleep(delay)
         await self.client.confirm_new_round()
@@ -301,6 +314,8 @@ class MajsoulBot:
         """对局结束"""
         self._in_game = False
         self.ai.on_game_end({})
+        scores = [p.score for p in self.game_state.players] if self.game_state else None
+        display.show_game_end(self.game_state, scores)
         logger.info("=== 对局结束 ===")
         self._game_end_event.set()
 
@@ -320,6 +335,7 @@ class MajsoulBot:
         if action is None:
             # 跳过 — 也要模拟思考时间
             delay = self.human.get_skip_delay()
+            display.show_action_decision("skip")
             logger.debug(f"跳过操作 (等待 {delay:.1f}s)")
             await asyncio.sleep(delay)
             await self.client.skip_action()
@@ -336,12 +352,14 @@ class MajsoulBot:
         if action_type in [8, 9]:
             # 自摸/荣和
             call = "tsumo" if action_type == 8 else "ron"
+            display.show_action_decision(call)
             delay = self.human.get_call_delay(call)
             logger.debug(f"和牌 (等待 {delay:.1f}s)")
             await asyncio.sleep(delay)
             await self.client.win(action_type)
         elif action_type == 7:
             # 立直
+            display.show_action_decision("riichi")
             delay = self.human.get_riichi_delay()
             logger.debug(f"立直 (等待 {delay:.1f}s)")
             await asyncio.sleep(delay)
@@ -353,6 +371,8 @@ class MajsoulBot:
         elif action_type in [2, 3, 5]:
             # 吃碰杠
             call = {2: "chi", 3: "pon", 5: "kan"}.get(action_type, "pon")
+            combination = action.get("combination", [])
+            display.show_action_decision(call, display.format_tiles(combination))
             delay = self.human.get_call_delay(call)
             logger.debug(f"{call} (等待 {delay:.1f}s)")
             await asyncio.sleep(delay)
@@ -385,6 +405,7 @@ class MajsoulBot:
             hand_size=len(gs.hand),
             is_riichi=gs.players[gs.seat].riichi,
         )
+        display.show_action_decision("discard", display.format_tile(tile))
         logger.debug(f"出牌 {'摸切' if is_moqie else '手切'} (等待 {delay:.1f}s)")
         await asyncio.sleep(delay)
         self.human.on_action()
