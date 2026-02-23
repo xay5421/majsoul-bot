@@ -298,20 +298,20 @@ class MajsoulClient:
 
     async def _connect_game_server(self, game_url: str, connect_token: str,
                                     game_uuid: str) -> None:
-        """连接到对局服务器并认证"""
-        logger.info(f"连接对局服务器: {game_url}")
-
-        # game_url 可能是 "wss://xxx" 或 "xxx:port" 格式
-        if not game_url.startswith("wss://") and not game_url.startswith("ws://"):
-            game_url = f"wss://{game_url}"
-
-        # 提取 host 作为 origin
-        from urllib.parse import urlparse
-        parsed = urlparse(game_url)
-        origin = f"https://{parsed.hostname}"
+        """连接到对局服务器并认证
+        
+        game_url 是内网 IP (如 172.30.16.133:4027)，不能直接连。
+        实际通过当前 lobby 的 route 域名 + /game-gateway 路径连接。
+        """
+        import re
+        m = re.match(r'(wss://[^/]+)', self.channel._endpoint)
+        route_base = m.group(1) if m else 'wss://route-5.maj-soul.com:443'
+        ws_url = f'{route_base}/game-gateway'
+        
+        logger.info(f"连接对局服务器: {ws_url} (game_url={game_url})")
 
         # 创建新的 channel 连接到对局服务器
-        self._game_channel = MSRPCChannel(game_url)
+        self._game_channel = MSRPCChannel(ws_url)
 
         # 注册对局事件 hook（在 connect 之前注册）
         self._game_channel.add_hook(
@@ -324,20 +324,19 @@ class MajsoulClient:
             ".lq.NotifyGameTerminate", self._on_game_end
         )
 
-        # 连接（会自动启动 dispatch_msg 循环）
-        await self._game_channel.connect(origin)
+        # 连接
+        await self._game_channel.connect("https://game.maj-soul.com")
         logger.info("对局服务器连接成功")
 
         # 在新 channel 上创建 FastTest 服务
         self.fast_test = FastTest(self._game_channel)
 
-        # 认证对局
+        # 认证对局 (需要 session=access_token)
         req = pb.ReqAuthGame()
         req.account_id = self.account_id
         req.token = connect_token
         req.game_uuid = game_uuid
-        version_clean = self.version.replace(".w", "")
-        req.client_version_string = f"web-{version_clean}"
+        req.session = self.access_token
 
         res = await self.fast_test.auth_game(req)
 
@@ -405,37 +404,19 @@ class MajsoulClient:
                            moqie: bool = False) -> None:
         """出牌"""
         req = pb.ReqSelfOperation()
+        req.type = 7  # discard
         req.tile = tile
         req.moqie = moqie
         req.is_liqi = is_riichi
-        # req.gap_type = 0
 
         logger.debug(f"发送出牌: {tile} (立直={is_riichi}, 摸切={moqie})")
         await self.fast_test.input_operation(req)
 
-    async def chi_peng_gang(self, type_: int, tiles: list[str],
-                             cancel: bool = False) -> None:
-        """吃碰杠操作"""
-        req = pb.ReqChiPengGang()
-        if cancel:
-            req.cancel_operation = True
-        else:
-            req.type = type_
-            for t in tiles:
-                req.index.append(int(t) if t.isdigit() else 0)
-        await self.fast_test.input_chi_peng_gang(req)
-
-    async def win(self, type_: int = 8) -> None:
-        """和牌 (自摸=8, 荣和=9)"""
-        req = pb.ReqSelfOperation()
-        req.type = type_
-        await self.fast_test.input_operation(req)
-
     async def skip_action(self) -> None:
         """跳过操作（不吃碰杠）"""
-        req = pb.ReqChiPengGang()
+        req = pb.ReqSelfOperation()
         req.cancel_operation = True
-        await self.fast_test.input_chi_peng_gang(req)
+        await self.fast_test.input_operation(req)
 
     async def confirm_new_round(self) -> None:
         """确认进入下一局"""
