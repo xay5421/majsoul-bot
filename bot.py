@@ -69,6 +69,7 @@ class MajsoulBot:
 
             # 主循环：匹配 → 打牌 → 等待结束 → 重复
             max_games = self.config.run.max_games
+            match_mode = self.config.match.mode  # "rank" or "ai"
             while self._running:
                 if max_games > 0 and self.games_played >= max_games:
                     logger.info(
@@ -76,16 +77,34 @@ class MajsoulBot:
                     )
                     break
 
-                # 开始匹配
                 self._game_end_event.clear()
-                success = await self.client.match(
-                    room_type=self.config.match.room_type,
-                    level=self.config.match.level,
-                )
-                if not success:
-                    logger.error("匹配失败，等待重试...")
-                    await asyncio.sleep(10)
-                    continue
+
+                if match_mode == "ai":
+                    # 友人房 + AI 对战
+                    room_id = await self.client.create_ai_room(
+                        room_type=self.config.match.room_type,
+                    )
+                    if not room_id:
+                        logger.error("创建房间失败，等待重试...")
+                        await asyncio.sleep(10)
+                        continue
+
+                    # 开始对局
+                    success = await self.client.start_room()
+                    if not success:
+                        logger.error("开始对局失败")
+                        await asyncio.sleep(10)
+                        continue
+                else:
+                    # 段位赛匹配
+                    success = await self.client.match(
+                        room_type=self.config.match.room_type,
+                        level=self.config.match.level,
+                    )
+                    if not success:
+                        logger.error("匹配失败，等待重试...")
+                        await asyncio.sleep(10)
+                        continue
 
                 # 等待对局结束
                 logger.info("等待对局结束...")

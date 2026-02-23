@@ -5,8 +5,8 @@ account:
 
 # 匹配设置
 match:
-  # 模式: rank (段位赛), casual (休闲赛), room (友人房)
-  mode: "rank"
+  # 模式: rank (段位赛), ai (AI对战/友人房)
+  mode: "ai"
   # 房间类型: 4e (四人东), 4s (四人南), 3e (三人东), 3s (三人南)
   room_type: "4e"
   # 段位场: copper (铜之间), silver (银之间), gold (金之间)

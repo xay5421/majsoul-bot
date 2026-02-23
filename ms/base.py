@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import websockets
 
 from ms.protocol_pb2 import Wrapper
@@ -51,6 +52,10 @@ class MSRPCChannel:
             type_byte = msg[0]
             if type_byte == 1:  # NOTIFY
                 wrapper = self.unwrap(msg[1:])
+                logging.getLogger("majsoul.ws").debug(
+                    f"NOTIFY: {wrapper.name} ({len(wrapper.data)} bytes, "
+                    f"hooks={list(self._hooks.keys())})"
+                )
                 for hook in self._hooks.get(wrapper.name, []):
                     asyncio.create_task(hook(wrapper.data))
             elif type_byte == 2:  # REQUEST

@@ -7,6 +7,7 @@ import random
 import uuid
 
 import aiohttp
+from google.protobuf.json_format import MessageToDict
 
 from ms.base import MSRPCChannel
 from ms.rpc import Lobby, FastTest
@@ -168,6 +169,7 @@ class MajsoulClient:
 
         if res.error and res.error.code:
             logger.error(f"匹配失败: code={res.error.code}")
+            logger.error(f"完整响应: {MessageToDict(res, preserving_proto_field_name=True)}")
             return False
 
         logger.info("匹配请求已发送，等待对手...")
@@ -180,6 +182,83 @@ class MajsoulClient:
         logger.info("已取消匹配")
         return True
 
+    async def create_ai_room(self, room_type: str = "4e") -> int | None:
+        """创建友人房 + AI 对手
+
+        Args:
+            room_type: "4e" (四人东), "4s" (四人南)
+
+        Returns:
+            room_id 或 None
+        """
+        player_count = 4 if room_type.startswith("4") else 3
+        # mode: 1=四人南(完整), 2=四人东(东风)
+        mode_map = {"4e": 2, "4s": 1, "3e": 12, "3s": 11}
+        mode = mode_map.get(room_type, 2)
+
+        req = pb.ReqCreateRoom()
+        req.player_count = player_count
+        req.mode.mode = mode
+        req.mode.ai = True
+        req.client_version_string = self.version
+
+        # 标准规则
+        dr = req.mode.detail_rule
+        dr.time_fixed = 5
+        dr.time_add = 20
+        dr.dora_count = 3
+        dr.shiduan = 1
+        dr.init_point = 25000
+        dr.fandian = 30000
+        dr.can_jifei = True
+        dr.have_liujumanguan = True
+        dr.have_biao_dora = True
+        dr.have_gang_biao_dora = True
+        dr.have_li_dora = True
+        dr.have_gang_li_dora = True
+        dr.have_sifenglianda = True
+        dr.have_sigangsanle = True
+        dr.have_sijializhi = True
+        dr.have_jiuzhongjiupai = True
+        dr.have_sanjiahele = False
+        dr.have_toutiao = True
+        dr.have_helelianzhuang = True
+        dr.have_helezhongju = True
+        dr.have_tingpailianzhuang = True
+        dr.have_tingpaizhongju = True
+
+        res = await self.lobby.create_room(req)
+        if res.error and res.error.code:
+            logger.error(f"创建房间失败: code={res.error.code}")
+            return None
+
+        room = MessageToDict(res, preserving_proto_field_name=True).get("room", {})
+        room_id = room.get("room_id", 0)
+        logger.info(f"房间创建成功: {room_id}")
+
+        # 加入 AI 玩家
+        ai_count = player_count - 1
+        for i in range(ai_count):
+            add_req = pb.ReqAddRoomRobot()
+            add_req.position = i + 1  # 位置 1, 2, 3
+            add_res = await self.lobby.add_room_robot(add_req)
+            if add_res.error and add_res.error.code:
+                logger.error(f"添加 AI 失败 (pos={i+1}): code={add_res.error.code}")
+            else:
+                logger.info(f"AI 玩家 {i+1} 加入")
+
+        return room_id
+
+    async def start_room(self) -> bool:
+        """开始友人房对局"""
+        req = pb.ReqRoomStart()
+        res = await self.lobby.start_room(req)
+        if res.error and res.error.code:
+            logger.error(f"开始对局失败: code={res.error.code}")
+            return False
+        logger.info("对局开始!")
+        return True
+
     # ─── 事件注册 ──────────────────────────────────
 
     def on(self, event_name: str, handler):
@@ -189,61 +268,99 @@ class MajsoulClient:
         self._event_handlers[event_name].append(handler)
 
     def _register_hooks(self) -> None:
-        """注册 protobuf 消息钩子"""
+        """注册 protobuf 消息钩子（lobby channel）"""
         # 匹配成功通知
         self.channel.add_hook(
             ".lq.NotifyMatchGameStart", self._on_match_game_start
         )
-        # 对局中的通知
-        notifications = [
-            (".lq.ActionNewRound", self._on_action),
-            (".lq.ActionDealTile", self._on_action),
-            (".lq.ActionDiscardTile", self._on_action),
-            (".lq.ActionChiPengGang", self._on_action),
-            (".lq.ActionAnGangAddGang", self._on_action),
-            (".lq.ActionBaBei", self._on_action),
-            (".lq.ActionHule", self._on_action),
-            (".lq.ActionLiuJu", self._on_action),
-            (".lq.ActionNoTile", self._on_action),
-            (".lq.NotifyGameEndResult", self._on_game_end),
-            (".lq.NotifyGameTerminate", self._on_game_end),
-        ]
-        for name, handler in notifications:
-            self.channel.add_hook(name, handler)
+        # 友人房对局开始通知
+        self.channel.add_hook(
+            ".lq.NotifyRoomGameStart", self._on_room_game_start
+        )
 
     async def _on_match_game_start(self, data: bytes) -> None:
-        """匹配成功"""
+        """匹配成功 — 连接对局服务器"""
         msg = pb.NotifyMatchGameStart()
         msg.ParseFromString(data)
+        await self._connect_game_server(
+            msg.game_url, msg.connect_token, msg.game_uuid
+        )
 
-        logger.info("匹配成功! 连接对局服务器...")
+    async def _on_room_game_start(self, data: bytes) -> None:
+        """友人房对局开始 — 连接对局服务器"""
+        msg = pb.NotifyRoomGameStart()
+        msg.ParseFromString(data)
+        await self._connect_game_server(
+            msg.game_url, msg.connect_token, msg.game_uuid
+        )
 
-        # 连接对局服务器
-        connect_token = msg.connect_token
-        game_url = msg.game_url
-        # game_url 格式: "wss://xxx/gateway"
+    async def _connect_game_server(self, game_url: str, connect_token: str,
+                                    game_uuid: str) -> None:
+        """连接到对局服务器并认证"""
+        logger.info(f"连接对局服务器: {game_url}")
+
+        # game_url 可能是 "wss://xxx" 或 "xxx:port" 格式
+        if not game_url.startswith("wss://") and not game_url.startswith("ws://"):
+            game_url = f"wss://{game_url}"
+
+        # 提取 host 作为 origin
+        from urllib.parse import urlparse
+        parsed = urlparse(game_url)
+        origin = f"https://{parsed.hostname}"
+
+        # 创建新的 channel 连接到对局服务器
+        self._game_channel = MSRPCChannel(game_url)
+
+        # 注册对局事件 hook（在 connect 之前注册）
+        self._game_channel.add_hook(
+            ".lq.ActionPrototype", self._on_action_prototype
+        )
+        self._game_channel.add_hook(
+            ".lq.NotifyGameEndResult", self._on_game_end
+        )
+        self._game_channel.add_hook(
+            ".lq.NotifyGameTerminate", self._on_game_end
+        )
+
+        # 连接（会自动启动 dispatch_msg 循环）
+        await self._game_channel.connect(origin)
+        logger.info("对局服务器连接成功")
+
+        # 在新 channel 上创建 FastTest 服务
+        self.fast_test = FastTest(self._game_channel)
 
         # 认证对局
         req = pb.ReqAuthGame()
         req.account_id = self.account_id
         req.token = connect_token
-        req.game_uuid = msg.game_uuid
+        req.game_uuid = game_uuid
         version_clean = self.version.replace(".w", "")
         req.client_version_string = f"web-{version_clean}"
 
         res = await self.fast_test.auth_game(req)
 
         if res.error and res.error.code:
-            logger.error(f"对局认证失败: {res.error}")
+            logger.error(f"对局认证失败: code={res.error.code}")
             return
+
+        res_dict = MessageToDict(res, preserving_proto_field_name=True)
 
         # 找到自己的座位
         seat = -1
-        players = res.players if hasattr(res, 'players') else []
-        for i, p in enumerate(players):
-            if p.account_id == self.account_id:
-                seat = i
-                break
+        seat_list = res_dict.get("seat_list", [])
+        if seat_list:
+            # seat_list 包含各座位的 account_id
+            for i, aid in enumerate(seat_list):
+                if aid == self.account_id:
+                    seat = i
+                    break
+        else:
+            # fallback: players 列表
+            players = res_dict.get("players", [])
+            for i, p in enumerate(players):
+                if p.get("account_id") == self.account_id:
+                    seat = i
+                    break
 
         logger.info(f"对局认证成功，座位: {seat}")
 
@@ -254,12 +371,26 @@ class MajsoulClient:
         # 进入对局
         enter_req = pb.ReqCommon()
         await self.fast_test.enter_game(enter_req)
+        logger.info("已进入对局")
 
-    async def _on_action(self, data: bytes) -> None:
-        """对局中的操作通知"""
-        wrapper = self.channel.unwrap(data)
+    async def _on_action_prototype(self, data: bytes) -> None:
+        """对局中的 ActionPrototype 通知
+        
+        雀魂所有对局事件都包在 ActionPrototype 里：
+        - ActionNewRound, ActionDealTile, ActionDiscardTile,
+        - ActionChiPengGang, ActionAnGangAddGang,
+        - ActionHule, ActionNoTile, ActionLiuJu 等
+        """
+        msg = pb.ActionPrototype()
+        msg.ParseFromString(data)
+
+        action_name = msg.name
+        action_data = msg.data
+
+        logger.debug(f"ActionPrototype: {action_name} ({len(action_data)} bytes)")
+
         for handler in self._event_handlers.get("action", []):
-            await handler(wrapper.name, wrapper.data)
+            await handler(action_name, action_data)
 
     async def _on_game_end(self, data: bytes) -> None:
         """对局结束"""
