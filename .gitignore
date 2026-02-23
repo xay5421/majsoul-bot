@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 config.yaml
 *.log
+mortal/mortal.pth
+mortal/libriichi.so
+mortal/*.pyd
