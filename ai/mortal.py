@@ -93,6 +93,11 @@ class MortalAI(BaseAI):
         self._last_reaction = None
         logger.warning("已强制切换到 ShantenAI fallback")
 
+    def clear_last_reaction(self):
+        """清除缓存的最后决策（重放后需要清除）"""
+        self._last_reaction = None
+        self._reach_pending = False
+
     def _restart_mortal(self):
         """重启 Mortal 进程（新一局开始时恢复）"""
         if self._fallback is not None:
