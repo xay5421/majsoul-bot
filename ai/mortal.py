@@ -72,7 +72,6 @@ class MortalAI(BaseAI):
         candidates = [
             os.path.expanduser("~/workspace/Mortal/mortal"),
             os.path.expanduser("~/Mortal/mortal"),
-            "./mortal",
         ]
         for d in candidates:
             if os.path.isfile(os.path.join(d, "mortal.py")):
