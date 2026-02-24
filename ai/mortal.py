@@ -115,8 +115,16 @@ class MortalAI(BaseAI):
         # 确保 libriichi.so 在路径中
         env["PYTHONPATH"] = str(self.mortal_dir)
 
+        # 优先用 Mortal 自己的 venv python（有独立依赖）
+        mortal_python = self.mortal_dir / ".venv" / "bin" / "python"
+        if not mortal_python.exists():
+            mortal_python = self.mortal_dir / ".venv" / "Scripts" / "python.exe"
+        if not mortal_python.exists():
+            mortal_python = Path(sys.executable)
+            logger.warning(f"Mortal 没有独立 venv，使用当前 python: {mortal_python}")
+
         cmd = [
-            sys.executable, "mortal.py", str(self.player_id)
+            str(mortal_python), "mortal.py", str(self.player_id)
         ]
         logger.info(f"启动 Mortal: {' '.join(cmd)}")
         self.process = subprocess.Popen(
@@ -129,6 +137,17 @@ class MortalAI(BaseAI):
             text=True,
             bufsize=1,  # line buffered
         )
+
+        # 等待进程启动（最多 30 秒）
+        import time
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                stderr = self.process.stderr.read() if self.process.stderr else ""
+                raise RuntimeError(f"Mortal 进程启动失败 (code={self.process.returncode}): {stderr[:500]}")
+            # 进程还活着就行
+            time.sleep(0.1)
+            break  # Popen 成功就继续，不需要等
 
     def _send(self, event: dict) -> str | None:
         """发送 mjai 事件，返回 Mortal 的响应（如果有）"""
@@ -166,11 +185,17 @@ class MortalAI(BaseAI):
         # 我们需要读取所有可用的输出
         return self._read_reaction()
 
-    def _read_reaction(self) -> str | None:
-        """读取 Mortal 的一行输出"""
+    def _read_reaction(self, timeout: float = 10) -> str | None:
+        """读取 Mortal 的一行输出（带超时）"""
         if not self.process or self.process.poll() is not None:
             return None
+        import select
         try:
+            # 用 select 实现超时，避免永久阻塞
+            ready, _, _ = select.select([self.process.stdout], [], [], timeout)
+            if not ready:
+                logger.warning(f"Mortal 响应超时 ({timeout}s)")
+                return None
             line = self.process.stdout.readline()
             if line:
                 line = line.strip()
