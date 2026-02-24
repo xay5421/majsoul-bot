@@ -720,6 +720,8 @@ class MajsoulBot:
         msg = pb.ActionNewRound()
         msg.ParseFromString(data)
 
+        self._discard_confirmed = False  # 新一局重置
+
         gs = self.game_state
         # 直接读 protobuf 属性构造 dict 传给 game_state
         d = {
