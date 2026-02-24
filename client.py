@@ -142,6 +142,10 @@ class MajsoulClient:
         self.nickname = res.account.nickname if res.account else ""
         logger.info(f"登录成功! ID: {self.account_id}, 昵称: {self.nickname}")
 
+        # 完成登录初始化（loginSuccess + fetchInfo）
+        # 不调这些的话段位匹配会报 1307
+        await self._post_login_init()
+
         # 检查残留对局
         if res.game_info and res.game_info.connect_token:
             logger.info(f"🔄 发现残留对局: {res.game_info.game_uuid[:30]}...")
@@ -154,6 +158,34 @@ class MajsoulClient:
             self._pending_reconnect = None
 
         return True
+
+    async def _post_login_init(self) -> None:
+        """登录后初始化（模拟客户端行为）
+
+        客户端登录后会调用 loginSuccess + loginBeat + fetchInfo 完成初始化。
+        不做这些调用的话，段位匹配会失败 (error 1307)。
+        """
+        try:
+            await self.lobby.login_success(pb.ReqCommon())
+            logger.debug("loginSuccess OK")
+        except Exception as e:
+            logger.warning(f"loginSuccess 失败 (可忽略): {e}")
+
+        try:
+            lb_req = pb.ReqLoginBeat()
+            lb_req.contract = ""
+            await self.lobby.login_beat(lb_req)
+            logger.debug("loginBeat OK")
+        except Exception as e:
+            logger.warning(f"loginBeat 失败 (可忽略): {e}")
+
+        try:
+            await self.lobby.fetch_info(pb.ReqCommon())
+            logger.debug("fetchInfo OK")
+        except Exception as e:
+            logger.warning(f"fetchInfo 失败 (可忽略): {e}")
+
+        logger.info("登录初始化完成")
 
     async def check_and_reconnect_game(self) -> bool:
         """检查并重连残留对局
@@ -215,40 +247,75 @@ class MajsoulClient:
 
     # ─── 匹配 ─────────────────────────────────────
 
-    # 段位场对局模式 ID
+    # 段位场匹配模式表 (id → match_sid 的 type 值)
+    # match_sid 格式: "{type}:{id}"
+    # 从 lqc.lqbin (matchmode 配置表) 解析
     MATCH_MODES = {
-        # 四麻
-        "4e_copper": 1,    # 铜之间四人东
-        "4e_silver": 2,    # 银之间四人东
-        "4e_gold": 3,      # 金之间四人东
-        "4s_copper": 4,    # 铜之间四人南
-        "4s_silver": 5,    # 银之间四人南
-        "4s_gold": 6,      # 金之间四人南
-        # 三麻
-        "3e_copper": 11,
-        "3e_silver": 12,
-        "3e_gold": 13,
-        "3s_copper": 14,
-        "3s_silver": 15,
-        "3s_gold": 16,
+        # id: (type, description)
+        # 四麻 铜之间
+        1:  (1, "铜之间四人东(免费)"),
+        2:  (1, "铜之间四人东"),
+        3:  (1, "铜之间四人南"),
+        # 四麻 银之间
+        4:  (1, "银之间四人东(免费)"),
+        5:  (1, "银之间四人东"),
+        6:  (1, "银之间四人南"),
+        # 四麻 金之间
+        7:  (1, "金之间四人东(免费)"),
+        8:  (1, "金之间四人东"),
+        9:  (1, "金之间四人南"),
+        # 三麻 铜之间
+        17: (1, "铜之间三人东"),
+        18: (1, "铜之间三人南"),
+    }
+
+    # 简写别名 → mode_id
+    MATCH_ALIASES = {
+        "4e_copper":      2,   # 铜之间四人东 (默认)
+        "4e_copper_free": 1,   # 铜之间四人东 (免费)
+        "4s_copper":      3,   # 铜之间四人南
+        "4e_silver":      5,
+        "4s_silver":      6,
+        "4e_gold":        8,
+        "4s_gold":        9,
+        "3e_copper":      17,
+        "3s_copper":      18,
     }
 
     async def match(self, room_type: str = "4e",
                     level: str = "copper") -> bool:
-        """开始段位赛匹配"""
+        """开始段位赛匹配 (使用 startUnifiedMatch API)
+
+        Args:
+            room_type: "4e" (四人东), "4s" (四人南), "3e", "3s"
+            level: "copper", "silver", "gold"
+
+        Returns:
+            True 表示匹配请求成功
+        """
         mode_key = f"{room_type}_{level}"
-        mode_id = self.MATCH_MODES.get(mode_key)
+        mode_id = self.MATCH_ALIASES.get(mode_key)
         if mode_id is None:
             logger.error(f"未知的匹配模式: {mode_key}")
-            logger.error(f"可用模式: {list(self.MATCH_MODES.keys())}")
+            logger.error(f"可用模式: {list(self.MATCH_ALIASES.keys())}")
             return False
 
-        logger.info(f"开始匹配: {mode_key} (mode_id={mode_id})")
+        mode_info = self.MATCH_MODES.get(mode_id)
+        if not mode_info:
+            logger.error(f"未知的 mode_id: {mode_id}")
+            return False
 
-        req = pb.ReqJoinMatchQueue()
-        req.match_mode = mode_id
-        req.client_version_string = self.version
-        res = await self.lobby.match_game(req)
+        type_id, desc = mode_info
+        match_sid = f"{type_id}:{mode_id}"
+        self._current_match_sid = match_sid
+
+        version_clean = self.version.replace(".w", "")
+        logger.info(f"开始匹配: {desc} (match_sid={match_sid})")
+
+        req = pb.ReqStartUnifiedMatch()
+        req.match_sid = match_sid
+        req.client_version_string = f"web-{version_clean}"
+        res = await self.lobby.start_unified_match(req)
 
         if res.error and res.error.code:
             logger.error(f"匹配失败: code={res.error.code}")
@@ -260,8 +327,15 @@ class MajsoulClient:
 
     async def cancel_match(self) -> bool:
         """取消匹配"""
-        req = pb.ReqCancelMatchQueue()
-        res = await self.lobby.cancel_match(req)
+        sid = getattr(self, '_current_match_sid', None)
+        if sid:
+            req = pb.ReqCancelUnifiedMatch()
+            req.match_sid = sid
+            await self.lobby.cancel_unified_match(req)
+        else:
+            # fallback: 旧 API
+            req = pb.ReqCancelMatchQueue()
+            await self.lobby.cancel_match(req)
         logger.info("已取消匹配")
         return True
 

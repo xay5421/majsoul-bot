@@ -78,7 +78,7 @@ class MajsoulBot:
             if reconnected:
                 logger.info("已重连残留对局，等待对局结束...")
                 try:
-                    await asyncio.wait_for(self._game_end_event.wait(), timeout=600)
+                    await asyncio.wait_for(self._game_end_event.wait(), timeout=1800)
                 except asyncio.TimeoutError:
                     logger.warning("重连对局超时 (600s)")
                 self.games_played += 1
@@ -124,7 +124,7 @@ class MajsoulBot:
                 # 等待对局结束
                 logger.info("等待对局结束...")
                 try:
-                    await asyncio.wait_for(self._game_end_event.wait(), timeout=600)
+                    await asyncio.wait_for(self._game_end_event.wait(), timeout=1800)
                 except asyncio.TimeoutError:
                     logger.warning("对局超时 (600s)")
 
