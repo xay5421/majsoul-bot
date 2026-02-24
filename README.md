@@ -43,7 +43,7 @@ match:
 
 ai:
   type: "mortal"        # basic / shanten / mortal / mjai_subprocess / mjai_http
-  mortal_dir: "./mortal"  # Mortal 模型目录（可选，会自动查找）
+  mortal_dir: "/path/to/Mortal/mortal"  # Mortal 目录路径
 
 run:
   max_games: 1          # 连续打几局 (0 = 不限)
@@ -83,37 +83,53 @@ Ctrl+C 或 `kill` 可优雅退出。
 
 [Mortal](https://github.com/Equim-chan/Mortal) 是目前最强的开源日麻 AI（天凤十段+水平），CPU ~3ms/决策。
 
-**安装方式 A：一键脚本（推荐）**
+**安装步骤：**
 
-```bash
-# 安装 PyTorch（CPU 版即可）
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install numpy
+1. 克隆 Mortal 仓库：
+   ```bash
+   git clone https://github.com/Equim-chan/Mortal.git
+   cd Mortal/mortal
+   ```
 
-# 下载模型（自动检测系统和 Python 版本）
-bash download_mortal.sh
-```
+2. 创建独立 venv 并安装依赖：
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install torch --index-url https://download.pytorch.org/whl/cpu
+   pip install numpy
+   ```
 
-脚本会下载 `mortal.pth`（模型权重）、`libriichi.so`（Rust 推理引擎）等文件到 `mortal/` 目录。
+3. 下载模型权重和推理引擎：
+   - `mortal.pth` — 从 [Akagi v2](https://github.com/shinkuan/Akagi/tree/v2/mjai_bot/mortal) 下载
+   - `libriichi.so`（Linux）/ `libriichi.pyd`（Windows）— 同上，选择对应 Python 版本和系统架构的文件
+   - 放到 `Mortal/mortal/` 目录下
 
-> **注意**：`download_mortal.sh` 下载的文件来自 [Akagi](https://github.com/shinkuan/Akagi) v2 分支。  
-> libriichi 支持 Python 3.10-3.12，Linux/macOS/Windows。
+4. 创建 `config.toml`：
+   ```toml
+   [control]
+   version = 4
+   state_file = 'mortal.pth'
 
-**安装方式 B：独立 Mortal 仓库**
+   [resnet]
+   conv_channels = 32
+   num_blocks = 2
+   ```
 
-如果你已有 Mortal 仓库（含 `mortal.py`、`mortal.pth`、`libriichi.so`），在 config 中指定路径：
+5. 验证能运行：
+   ```bash
+   echo '{"type":"start_game","id":0}' | python mortal.py 0
+   ```
 
-```yaml
-ai:
-  type: "mortal"
-  mortal_dir: "/path/to/Mortal/mortal"
-```
+6. 在 majsoul-bot 的 `config.yaml` 中配置路径：
+   ```yaml
+   ai:
+     type: "mortal"
+     mortal_dir: "/path/to/Mortal/mortal"
+   ```
 
-自动查找顺序：`~/workspace/Mortal/mortal` → `~/Mortal/mortal` → `./mortal`
-
-**Mortal 需要独立的 venv**（因为 libriichi 和 PyTorch 依赖），bot 会通过 subprocess 调用，不需要共享环境。
-
-如果 Mortal 有独立 venv，确保 `mortal_dir` 下的 `.venv/bin/python` 能正确运行 `mortal.py`。
+> **注意**：Mortal 需要独立 venv（含 PyTorch + libriichi），bot 通过 subprocess 调用，两边环境互不影响。  
+> libriichi 支持 Python 3.10-3.12。  
+> `mortal_dir` 自动查找顺序：`~/workspace/Mortal/mortal` → `~/Mortal/mortal`
 
 ### mjai_subprocess — mjai 子进程
 
@@ -170,12 +186,7 @@ majsoul-bot/
 │   ├── rpc.py          # RPC 调用
 │   ├── protocol_pb2.py # Protobuf 生成代码
 │   └── liqi.json       # API 定义
-├── mortal/             # Mortal 模型文件 (download_mortal.sh 下载)
-│   ├── mortal.pth      # 模型权重 (gitignore)
-│   ├── libriichi.so    # Rust 推理引擎 (gitignore)
-│   └── model.py        # 网络结构
 ├── config.example.yaml # 配置模板
-├── download_mortal.sh  # Mortal 一键下载脚本
 ├── test_connect.py     # 连接测试
 └── requirements.txt
 ```
