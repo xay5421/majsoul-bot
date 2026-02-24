@@ -12,6 +12,7 @@ from google.protobuf.json_format import MessageToDict
 from ms.base import MSRPCChannel
 from ms.rpc import Lobby, FastTest
 import ms.protocol_pb2 as pb
+from codec import decode as xor_decode
 
 logger = logging.getLogger("majsoul.client")
 
@@ -31,6 +32,8 @@ class MajsoulClient:
         self.version: str = ""
         self._game_channel: MSRPCChannel | None = None
         self._event_handlers: dict[str, list] = {}
+        self._username: str = ""
+        self._password: str = ""
 
     # ─── 连接 ─────────────────────────────────────
 
@@ -80,17 +83,37 @@ class MajsoulClient:
         logger.info("连接成功")
 
     async def close(self) -> None:
-        """关闭连接"""
-        if self.channel:
-            await self.channel.close()
-            logger.info("连接已关闭")
+        """关闭连接（先 logout 再断开，避免 1003）"""
         if self._game_channel:
-            await self._game_channel.close()
+            try:
+                await self._game_channel.close()
+            except Exception:
+                pass
+            self._game_channel = None
+
+        if self.channel:
+            try:
+                if self.lobby and self.access_token:
+                    await self.lobby.logout(pb.ReqLogout())
+                    logger.info("已登出")
+            except Exception as e:
+                logger.debug(f"登出异常 (可忽略): {e}")
+            try:
+                await self.channel.close()
+            except Exception:
+                pass
+            logger.info("连接已关闭")
 
     # ─── 登录 ─────────────────────────────────────
 
     async def login(self, username: str, password: str) -> bool:
-        """登录 CN 服（账号密码）"""
+        """登录 CN 服（账号密码）
+
+        Returns:
+            True 表示登录成功。登录后会自动检查残留对局。
+        """
+        self._username = username
+        self._password = password
         logger.info(f"登录中: {username}")
 
         version_clean = self.version.replace(".w", "")
@@ -106,6 +129,7 @@ class MajsoulClient:
         req.gen_access_token = True
         req.client_version_string = f"web-{version_clean}"
         req.currency_platforms.append(2)
+        req.reconnect = True  # 允许踢掉旧连接
 
         res = await self.lobby.login(req)
 
@@ -117,7 +141,63 @@ class MajsoulClient:
         self.access_token = res.access_token
         self.nickname = res.account.nickname if res.account else ""
         logger.info(f"登录成功! ID: {self.account_id}, 昵称: {self.nickname}")
+
+        # 检查残留对局
+        if res.game_info and res.game_info.connect_token:
+            logger.info(f"🔄 发现残留对局: {res.game_info.game_uuid[:30]}...")
+            self._pending_reconnect = {
+                "connect_token": res.game_info.connect_token,
+                "game_uuid": res.game_info.game_uuid,
+                "location": res.game_info.location,
+            }
+        else:
+            self._pending_reconnect = None
+
         return True
+
+    async def check_and_reconnect_game(self) -> bool:
+        """检查并重连残留对局
+
+        Returns:
+            True 如果成功重连了一局
+        """
+        # 先看登录时是否带了 game_info
+        if self._pending_reconnect:
+            info = self._pending_reconnect
+            self._pending_reconnect = None
+            logger.info("尝试重连登录时的残留对局...")
+            return await self._reconnect_game(
+                info["connect_token"], info["game_uuid"]
+            )
+
+        # 再主动查询
+        gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
+        gd = MessageToDict(gi, preserving_proto_field_name=True)
+        game_info = gd.get("game_info", {})
+        if game_info.get("connect_token"):
+            logger.info(f"🔄 发现残留对局: {game_info.get('game_uuid', '?')[:30]}...")
+            return await self._reconnect_game(
+                game_info["connect_token"], game_info["game_uuid"]
+            )
+
+        return False
+
+    async def _reconnect_game(self, connect_token: str,
+                               game_uuid: str) -> bool:
+        """重连到残留对局并恢复状态"""
+        try:
+            await self._connect_game_server(
+                game_url="", connect_token=connect_token,
+                game_uuid=game_uuid
+            )
+            return True
+        except Exception as e:
+            # 即使状态恢复有问题，如果 game channel 已连接，仍然返回 True
+            if self._game_channel and self.fast_test:
+                logger.warning(f"重连状态恢复不完整 (可继续): {e}")
+                return True
+            logger.error(f"重连对局失败: {e}")
+            return False
 
     # ─── 心跳 ─────────────────────────────────────
 
@@ -167,6 +247,7 @@ class MajsoulClient:
 
         req = pb.ReqJoinMatchQueue()
         req.match_mode = mode_id
+        req.client_version_string = self.version
         res = await self.lobby.match_game(req)
 
         if res.error and res.error.code:
@@ -302,6 +383,8 @@ class MajsoulClient:
         
         game_url 是内网 IP (如 172.30.16.133:4027)，不能直接连。
         实际通过当前 lobby 的 route 域名 + /game-gateway 路径连接。
+        
+        支持断线重连：enterGame 会返回 GameRestore 数据。
         """
         import re
         m = re.match(r'(wss://[^/]+)', self.channel._endpoint)
@@ -309,6 +392,13 @@ class MajsoulClient:
         ws_url = f'{route_base}/game-gateway'
         
         logger.info(f"连接对局服务器: {ws_url} (game_url={game_url})")
+
+        # 关闭旧的 game channel
+        if self._game_channel:
+            try:
+                await self._game_channel.close()
+            except Exception:
+                pass
 
         # 创建新的 channel 连接到对局服务器
         self._game_channel = MSRPCChannel(ws_url)
@@ -350,13 +440,11 @@ class MajsoulClient:
         seat = -1
         seat_list = res_dict.get("seat_list", [])
         if seat_list:
-            # seat_list 包含各座位的 account_id
             for i, aid in enumerate(seat_list):
                 if aid == self.account_id:
                     seat = i
                     break
         else:
-            # fallback: players 列表
             players = res_dict.get("players", [])
             for i, p in enumerate(players):
                 if p.get("account_id") == self.account_id:
@@ -369,10 +457,24 @@ class MajsoulClient:
         for handler in self._event_handlers.get("game_start", []):
             await handler(seat, res)
 
-        # 进入对局
+        # 进入对局 — 如果是重连，会返回 GameRestore
         enter_req = pb.ReqCommon()
-        await self.fast_test.enter_game(enter_req)
-        logger.info("已进入对局")
+        enter_res = await self.fast_test.enter_game(enter_req)
+
+        if enter_res.is_end:
+            logger.info("对局已结束")
+            for handler in self._event_handlers.get("game_end", []):
+                await handler(b"")
+            return
+
+        if enter_res.game_restore and enter_res.game_restore.actions:
+            # 断线重连 — 重放 actions 恢复状态
+            actions = enter_res.game_restore.actions
+            logger.info(f"🔄 断线重连，重放 {len(actions)} 个动作恢复状态")
+            for handler in self._event_handlers.get("game_restore", []):
+                await handler(enter_res.game_restore)
+        else:
+            logger.info("已进入对局")
 
     async def _on_action_prototype(self, data: bytes) -> None:
         """对局中的 ActionPrototype 通知
@@ -381,12 +483,14 @@ class MajsoulClient:
         - ActionNewRound, ActionDealTile, ActionDiscardTile,
         - ActionChiPengGang, ActionAnGangAddGang,
         - ActionHule, ActionNoTile, ActionLiuJu 等
+        
+        data 字段经过 XOR 混淆，需要先解密。
         """
         msg = pb.ActionPrototype()
         msg.ParseFromString(data)
 
         action_name = msg.name
-        action_data = msg.data
+        action_data = xor_decode(msg.data)  # XOR 解密
 
         logger.debug(f"ActionPrototype: {action_name} ({len(action_data)} bytes)")
 
@@ -402,20 +506,45 @@ class MajsoulClient:
 
     async def discard_tile(self, tile: str, is_riichi: bool = False,
                            moqie: bool = False) -> None:
-        """出牌"""
+        """出牌
+
+        操作码: type=1 正常出牌, type=7 立直出牌
+        """
         req = pb.ReqSelfOperation()
-        req.type = 7  # discard
+        req.type = 1  # 正常出牌
         req.tile = tile
         req.moqie = moqie
-        req.is_liqi = is_riichi
+        # 立直: type=7
+        if is_riichi:
+            req.type = 7
 
-        logger.debug(f"发送出牌: {tile} (立直={is_riichi}, 摸切={moqie})")
+        logger.info(f"发送出牌: {tile} (type={req.type}, 立直={is_riichi}, 摸切={moqie})")
         await self.fast_test.input_operation(req)
 
     async def skip_action(self) -> None:
         """跳过操作（不吃碰杠）"""
         req = pb.ReqSelfOperation()
         req.cancel_operation = True
+        await self.fast_test.input_operation(req)
+
+    async def win(self, action_type: int = 8) -> None:
+        """和牌 (自摸=8, 荣和=9)"""
+        req = pb.ReqSelfOperation()
+        req.type = action_type
+        logger.debug(f"发送和牌: type={action_type}")
+        await self.fast_test.input_operation(req)
+
+    async def chi_peng_gang(self, action_type: int, combination: list = None,
+                            index: int = 0) -> None:
+        """吃(2)/碰(3)/暗杠(4)/明杠(5)/加杠(6)
+        
+        ReqSelfOperation 没有 combination 字段。
+        服务端根据 type + index 来确定操作。
+        """
+        req = pb.ReqSelfOperation()
+        req.type = action_type
+        req.index = index
+        logger.info(f"发送副露: type={action_type} index={index}")
         await self.fast_test.input_operation(req)
 
     async def confirm_new_round(self) -> None:

@@ -21,9 +21,15 @@ HONOR_NAMES = {**WIND_NAMES, **DRAGON_NAMES}
 
 
 def tile_to_str(tile: str) -> str:
-    """将牌编码转换为中文显示 '1m' -> '一万'"""
+    """将牌编码转换为中文显示 '1m' -> '一万'
+    
+    也处理 combination 格式如 '5z|5' (牌|来源seat)
+    """
     if not tile or len(tile) < 2:
         return tile
+    # 去掉 combination 的 |N 后缀
+    if "|" in tile:
+        tile = tile.split("|")[0]
     num = tile[:-1]
     suit = tile[-1]
     if suit == "z":

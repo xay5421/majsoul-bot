@@ -1,6 +1,7 @@
 """雀魂自动打牌机器人 — 主入口"""
 import asyncio
 import logging
+import random
 import signal
 import sys
 
@@ -8,6 +9,7 @@ import ms.protocol_pb2 as pb
 from google.protobuf.json_format import MessageToDict
 
 from client import MajsoulClient
+from codec import decode as xor_decode
 from config import load_config
 from game_state import GameState
 from ai.basic import BasicAI
@@ -15,6 +17,8 @@ from human_like import HumanBehavior
 import display
 
 logger = logging.getLogger("majsoul")
+
+WIND = ['东', '南', '西', '北']
 
 
 class MajsoulBot:
@@ -33,7 +37,6 @@ class MajsoulBot:
 
     async def run(self) -> None:
         """主运行循环"""
-        # 设置日志
         log_level = getattr(logging, self.config.run.log_level, logging.INFO)
         logging.basicConfig(
             level=log_level,
@@ -44,10 +47,8 @@ class MajsoulBot:
         logger.info("🀄 雀魂机器人启动")
 
         try:
-            # 连接
             await self.client.connect()
 
-            # 登录
             success = await self.client.login(
                 self.config.account.username,
                 self.config.account.password,
@@ -60,27 +61,37 @@ class MajsoulBot:
             self.client.on("game_start", self._on_game_start)
             self.client.on("action", self._on_action)
             self.client.on("game_end", self._on_game_end)
+            self.client.on("game_restore", self._on_game_restore)
             await self.client.start_event_loop()
 
             # 启动心跳
-            heartbeat_task = asyncio.create_task(
-                self.client.heartbeat_loop()
-            )
+            heartbeat_task = asyncio.create_task(self.client.heartbeat_loop())
 
-            # 主循环：匹配 → 打牌 → 等待结束 → 重复
+            # 检查并重连残留对局
+            reconnected = await self.client.check_and_reconnect_game()
+            if reconnected:
+                logger.info("已重连残留对局，等待对局结束...")
+                try:
+                    await asyncio.wait_for(self._game_end_event.wait(), timeout=600)
+                except asyncio.TimeoutError:
+                    logger.warning("重连对局超时 (600s)")
+                self.games_played += 1
+                if self._running and self.config.run.max_games != 1:
+                    interval = self.config.run.game_interval
+                    logger.info(f"等待 {interval} 秒后继续...")
+                    await asyncio.sleep(interval)
+
+            # 主循环
             max_games = self.config.run.max_games
-            match_mode = self.config.match.mode  # "rank" or "ai"
+            match_mode = self.config.match.mode
             while self._running:
                 if max_games > 0 and self.games_played >= max_games:
-                    logger.info(
-                        f"已完成 {self.games_played} 局，停止匹配"
-                    )
+                    logger.info(f"已完成 {self.games_played} 局，停止匹配")
                     break
 
                 self._game_end_event.clear()
 
                 if match_mode == "ai":
-                    # 友人房 + AI 对战
                     room_id = await self.client.create_ai_room(
                         room_type=self.config.match.room_type,
                     )
@@ -89,14 +100,12 @@ class MajsoulBot:
                         await asyncio.sleep(10)
                         continue
 
-                    # 开始对局
                     success = await self.client.start_room()
                     if not success:
                         logger.error("开始对局失败")
                         await asyncio.sleep(10)
                         continue
                 else:
-                    # 段位赛匹配
                     success = await self.client.match(
                         room_type=self.config.match.room_type,
                         level=self.config.match.level,
@@ -108,11 +117,14 @@ class MajsoulBot:
 
                 # 等待对局结束
                 logger.info("等待对局结束...")
-                await self._game_end_event.wait()
+                try:
+                    await asyncio.wait_for(self._game_end_event.wait(), timeout=600)
+                except asyncio.TimeoutError:
+                    logger.warning("对局超时 (600s)")
+
                 self.games_played += 1
 
-                # 对局间隔
-                if self._running:
+                if self._running and max_games != 1:
                     interval = self.config.run.game_interval
                     logger.info(f"等待 {interval} 秒后继续...")
                     await asyncio.sleep(interval)
@@ -138,30 +150,141 @@ class MajsoulBot:
         self.ai.on_game_start(self.game_state)
         logger.info(f"对局开始! 座位={seat}")
 
+    async def _on_game_restore(self, game_restore) -> None:
+        """断线重连 — 重放 actions 恢复游戏状态"""
+        if not self.game_state:
+            logger.warning("重连但没有游戏状态，无法恢复")
+            return
+
+        actions = game_restore.actions
+        logger.info(f"🔄 重放 {len(actions)} 个动作恢复状态...")
+
+        for action_proto in actions:
+            action_name = action_proto.name
+            raw_data = action_proto.data
+            
+            # GameRestore 的 actions 可能未经 XOR 编码，也可能经过
+            # 先尝试直接解析，失败则尝试 XOR 解码
+            action_data = raw_data
+            if action_name == "ActionNewRound":
+                try:
+                    test = pb.ActionNewRound()
+                    test.ParseFromString(raw_data)
+                    if not test.tiles:  # 直接解析没有 tiles，说明数据有误
+                        action_data = xor_decode(raw_data)
+                except Exception:
+                    action_data = xor_decode(raw_data)
+            else:
+                try:
+                    # 简单验证：如果直接解析 protobuf 不报错就用原始数据
+                    test = pb.ActionDealTile()
+                    test.ParseFromString(raw_data)
+                except Exception:
+                    action_data = xor_decode(raw_data)
+
+            try:
+                # 重放时只更新状态，不做决策
+                if action_name == "ActionNewRound":
+                    msg = pb.ActionNewRound()
+                    msg.ParseFromString(action_data)
+                    d = {
+                        'chang': msg.chang, 'ju': msg.ju, 'ben': msg.ben,
+                        'liqibang': msg.liqibang,
+                        'doras': list(msg.doras) or ([msg.dora] if msg.dora else []),
+                        'scores': list(msg.scores),
+                        'tiles': list(msg.tiles),
+                    }
+                    self.game_state.new_round(d)
+                elif action_name == "ActionDealTile":
+                    msg = pb.ActionDealTile()
+                    msg.ParseFromString(action_data)
+                    if msg.seat == self.game_state.seat and msg.tile:
+                        self.game_state.on_draw(msg.seat, msg.tile)
+                    self.game_state.tiles_left = msg.left_tile_count
+                elif action_name == "ActionDiscardTile":
+                    msg = pb.ActionDiscardTile()
+                    msg.ParseFromString(action_data)
+                    self.game_state.on_discard(
+                        msg.seat, msg.tile, msg.moqie, msg.is_liqi
+                    )
+                elif action_name == "ActionChiPengGang":
+                    msg = pb.ActionChiPengGang()
+                    msg.ParseFromString(action_data)
+                    self.game_state.on_chi_peng_gang(
+                        msg.seat, msg.type, list(msg.tiles), list(msg.froms)
+                    )
+                elif action_name == "ActionAnGangAddGang":
+                    msg = pb.ActionAnGangAddGang()
+                    msg.ParseFromString(action_data)
+                    if msg.type == 2:
+                        tiles = [msg.tiles] if isinstance(msg.tiles, str) else list(msg.tiles)
+                        self.game_state.on_ankan(msg.seat, tiles)
+                    elif msg.type == 3:
+                        self.game_state.on_kakan(msg.seat, msg.tiles)
+            except Exception as e:
+                logger.debug(f"重放 {action_name} 出错 (可忽略): {e}")
+
+        logger.info("✅ 状态恢复完成")
+        display.show_round_start(self.game_state)
+
+        # 恢复后检查最后一个 action 是否需要我们响应
+        if actions:
+            last = actions[-1]
+            last_name = last.name
+            # GameRestore 的 actions 可能未经 XOR 编码
+            last_data = last.data
+            try:
+                # 先尝试直接解析（未编码）
+                test_msg = pb.ActionDealTile()
+                test_msg.ParseFromString(last_data)
+            except Exception:
+                # 如果失败，尝试 XOR 解码
+                last_data = xor_decode(last.data)
+
+            try:
+                # 如果最后是 DealTile 且轮到我，需要出牌
+                if last_name == "ActionDealTile":
+                    msg = pb.ActionDealTile()
+                    msg.ParseFromString(last_data)
+                    if msg.seat == self.game_state.seat:
+                        if msg.operation and msg.operation.operation_list:
+                            op = MessageToDict(msg.operation, preserving_proto_field_name=True)
+                            self.game_state.pending_operation = op
+                            await self._process_pending_operation()
+                        else:
+                            await self._do_discard()
+                elif last_name == "ActionDiscardTile":
+                    msg = pb.ActionDiscardTile()
+                    msg.ParseFromString(last_data)
+                    if msg.seat != self.game_state.seat and msg.operation and msg.operation.operation_list:
+                        op = MessageToDict(msg.operation, preserving_proto_field_name=True)
+                        self.game_state.pending_operation = op
+                        await self._process_pending_operation()
+            except Exception as e:
+                logger.warning(f"重连后恢复最后操作失败 (等待服务端重发): {e}")
+
     async def _on_action(self, action_name: str, data: bytes) -> None:
-        """处理对局中的操作"""
+        """处理对局中的操作 (data 已经过 XOR 解密)"""
         if not self.game_state:
             logger.warning("收到操作但没有游戏状态")
             return
 
-        gs = self.game_state
-
         try:
-            if action_name == ".lq.ActionNewRound":
+            if action_name == "ActionNewRound":
                 await self._handle_new_round(data)
-            elif action_name == ".lq.ActionDealTile":
+            elif action_name == "ActionDealTile":
                 await self._handle_deal_tile(data)
-            elif action_name == ".lq.ActionDiscardTile":
+            elif action_name == "ActionDiscardTile":
                 await self._handle_discard_tile(data)
-            elif action_name == ".lq.ActionChiPengGang":
+            elif action_name == "ActionChiPengGang":
                 await self._handle_chi_peng_gang(data)
-            elif action_name == ".lq.ActionAnGangAddGang":
+            elif action_name == "ActionAnGangAddGang":
                 await self._handle_angang_addgang(data)
-            elif action_name == ".lq.ActionHule":
+            elif action_name == "ActionHule":
                 await self._handle_hule(data)
-            elif action_name == ".lq.ActionNoTile":
+            elif action_name == "ActionNoTile":
                 await self._handle_notile(data)
-            elif action_name == ".lq.ActionLiuJu":
+            elif action_name == "ActionLiuJu":
                 await self._handle_liuju(data)
             else:
                 logger.debug(f"未处理的操作: {action_name}")
@@ -169,173 +292,225 @@ class MajsoulBot:
             logger.exception(f"处理操作 {action_name} 出错: {e}")
 
     async def _handle_new_round(self, data: bytes) -> None:
-        """新一局"""
-        msg = pb.RecordNewRound()
+        """新一局 — 使用 ActionNewRound (不是 RecordNewRound)"""
+        msg = pb.ActionNewRound()
         msg.ParseFromString(data)
-        d = MessageToDict(msg, preserving_proto_field_name=True)
 
         gs = self.game_state
+        # 直接读 protobuf 属性构造 dict 传给 game_state
+        d = {
+            'chang': msg.chang,
+            'ju': msg.ju,
+            'ben': msg.ben,
+            'liqibang': msg.liqibang,
+            'doras': list(msg.doras) or ([msg.dora] if msg.dora else []),
+            'scores': list(msg.scores),
+            'tiles': list(msg.tiles),
+        }
+
         gs.new_round(d)
         self.human.on_round_start()
         self.ai.on_round_start(gs)
         display.show_round_start(gs)
 
-        # 如果有等待的操作（庄家第一巡）
-        operation = d.get("operation")
-        if operation:
-            gs.pending_operation = operation
+        # 庄家14张或有操作时需要出牌/决策
+        if msg.operation and msg.operation.operation_list:
+            op = MessageToDict(msg.operation, preserving_proto_field_name=True)
+            gs.pending_operation = op
             await self._process_pending_operation()
-        elif gs.seat == gs.dealer and gs.draw:
+        elif len(d['tiles']) == 14:
             # 庄家需要出牌
             await self._do_discard()
 
     async def _handle_deal_tile(self, data: bytes) -> None:
-        """摸牌"""
-        msg = pb.RecordDealTile()
+        """摸牌 — 使用 ActionDealTile"""
+        msg = pb.ActionDealTile()
         msg.ParseFromString(data)
-        d = MessageToDict(msg, preserving_proto_field_name=True)
 
-        seat = d.get("seat", 0)
-        tile = d.get("tile", "")
+        seat = msg.seat  # 直接读 protobuf 属性，seat=0 不会丢失
+        tile = msg.tile
+        left = msg.left_tile_count
 
         gs = self.game_state
-        gs.on_draw(seat, tile)
 
-        if seat == gs.seat:
-            display.show_draw(gs, tile)        # 检查新宝牌
-        doras = d.get("doras", [])
-        for dora in doras:
+        if seat != gs.seat:
+            # 他家摸牌
+            gs.tiles_left = left
+            return
+
+        if not tile:
+            return
+
+        gs.on_draw(seat, tile)
+        gs.tiles_left = left
+        display.show_draw(gs, tile)
+
+        # 新宝牌
+        for dora in msg.doras:
             if dora not in gs.dora_indicators:
                 gs.on_new_dora(dora)
 
         # 处理操作（自摸/暗杠/加杠/立直等）
-        operation = d.get("operation")
-        if operation and seat == gs.seat:
-            gs.pending_operation = operation
+        if msg.operation and msg.operation.operation_list:
+            op = MessageToDict(msg.operation, preserving_proto_field_name=True)
+            gs.pending_operation = op
             await self._process_pending_operation()
-        elif seat == gs.seat:
+        else:
             # 普通摸牌，出牌
             await self._do_discard()
 
     async def _handle_discard_tile(self, data: bytes) -> None:
-        """其他人出牌"""
-        msg = pb.RecordDiscardTile()
+        """出牌 — 使用 ActionDiscardTile"""
+        msg = pb.ActionDiscardTile()
         msg.ParseFromString(data)
-        d = MessageToDict(msg, preserving_proto_field_name=True)
 
-        seat = d.get("seat", 0)
-        tile = d.get("tile", "")
-        is_draw = d.get("moqie", False)
-        is_riichi = d.get("is_liqi", False)
+        seat = msg.seat
+        tile = msg.tile
+        is_draw = msg.moqie
+        is_riichi = msg.is_liqi
+
+        if seat == self.game_state.seat:
+            logger.info(f"服务端确认自家出牌: {tile} (moqie={is_draw})")
 
         gs = self.game_state
         gs.on_discard(seat, tile, is_draw, is_riichi)
-        display.show_discard(gs, seat, tile, is_tsumogiri=is_draw, is_riichi=is_riichi)        # 是否有操作可以执行（吃碰杠荣和）
-        operation = d.get("operation")
-        if operation:
-            gs.pending_operation = operation
+        display.show_discard(gs, seat, tile, is_tsumogiri=is_draw, is_riichi=is_riichi)
+
+        if seat == gs.seat:
+            return  # 自己出的牌不需要响应
+
+        # 是否有操作可以执行（吃碰杠荣和）
+        if msg.operation and msg.operation.operation_list:
+            op = MessageToDict(msg.operation, preserving_proto_field_name=True)
+            gs.pending_operation = op
             await self._process_pending_operation()
 
     async def _handle_chi_peng_gang(self, data: bytes) -> None:
-        """吃碰杠"""
-        msg = pb.RecordChiPengGang()
+        """吃碰杠 — 使用 ActionChiPengGang"""
+        msg = pb.ActionChiPengGang()
         msg.ParseFromString(data)
-        d = MessageToDict(msg, preserving_proto_field_name=True)
 
-        seat = d.get("seat", 0)
-        type_ = d.get("type", 0)
-        tiles = d.get("tiles", [])
-        froms = d.get("froms", [])
+        seat = msg.seat
+        type_ = msg.type
+        tiles = list(msg.tiles)
+        froms = list(msg.froms)
 
         gs = self.game_state
         gs.on_chi_peng_gang(seat, type_, tiles, froms)
         type_names = {0: "吃", 1: "碰", 2: "杠"}
-        display.show_call(gs, seat, type_names.get(type_, "?"), tiles)        # 吃碰后需要出牌
-        operation = d.get("operation")
-        if operation and seat == gs.seat:
-            gs.pending_operation = operation
-            await self._process_pending_operation()
+        display.show_call(gs, seat, type_names.get(type_, "?"), tiles)
+
+        # 吃碰后可能有操作（如需要出牌）
+        if msg.operation and msg.operation.operation_list:
+            op = MessageToDict(msg.operation, preserving_proto_field_name=True)
+            if seat == gs.seat:
+                gs.pending_operation = op
+                await self._process_pending_operation()
         elif seat == gs.seat:
             await self._do_discard()
 
     async def _handle_angang_addgang(self, data: bytes) -> None:
-        """暗杠/加杠"""
-        msg = pb.RecordAnGangAddGang()
+        """暗杠/加杠 — 使用 ActionAnGangAddGang"""
+        msg = pb.ActionAnGangAddGang()
         msg.ParseFromString(data)
-        d = MessageToDict(msg, preserving_proto_field_name=True)
 
-        seat = d.get("seat", 0)
-        type_ = d.get("type", 0)  # 2=暗杠, 3=加杠
-        tiles = d.get("tiles", "")
+        seat = msg.seat
+        type_ = msg.type  # 2=暗杠, 3=加杠
+        tiles_str = msg.tiles
 
         gs = self.game_state
         if type_ == 2:
-            gs.on_ankan(seat, [tiles] if isinstance(tiles, str) else tiles)
+            gs.on_ankan(seat, [tiles_str] if isinstance(tiles_str, str) else list(tiles_str))
         elif type_ == 3:
-            gs.on_kakan(seat, tiles)
+            gs.on_kakan(seat, tiles_str)
+
+        who = '我' if seat == gs.seat else f'玩家{seat}'
+        names = {2: '暗杠', 3: '加杠'}
+        logger.info(f"{who} {names.get(type_, f'杠{type_}')}: {tiles_str}")
 
         # 可能有抢杠和
-        operation = d.get("operation")
-        if operation:
-            gs.pending_operation = operation
+        if msg.operation and msg.operation.operation_list:
+            op = MessageToDict(msg.operation, preserving_proto_field_name=True)
+            gs.pending_operation = op
             await self._process_pending_operation()
 
     async def _handle_hule(self, data: bytes) -> None:
-        """和牌"""
-        msg = pb.RecordHule()
+        """和牌 — 使用 ActionHule"""
+        msg = pb.ActionHule()
         msg.ParseFromString(data)
-        d = MessageToDict(msg, preserving_proto_field_name=True)
 
-        hules = d.get("hules", [])
-        scores = None
-        for h in hules:
-            seat = h.get("seat", 0)
-            point_rong = h.get("point_rong", 0)
-            point_zimo = h.get("point_zimo_qin", 0) or h.get("point_zimo_xian", 0)
-            is_tsumo = point_rong == 0
-            fans = h.get("fans", [])
-            fan_names = [f.get("name", "") for f in fans]
-            hu_tile = h.get("hu_tile", "")
-            logger.info(
-                f"🎉 玩家{seat}和了! "
-                f"{'自摸' if is_tsumo else '荣和'} "
-                f"役: {', '.join(fan_names)}"
-            )
-            display.show_win(gs, seat, hu_tile, is_tsumo=is_tsumo)
+        gs = self.game_state
+        scores = list(msg.scores) if msg.scores else None
+        delta = list(msg.delta_scores) if msg.delta_scores else None
 
-        # 更新分数
-        score_info = d.get("scores", d.get("delta_scores", []))
-        if score_info:
-            logger.debug(f"分数变动: {score_info}")
+        logger.info(f"🎊 和牌! 分数变化: {delta} → {scores}")
 
-        # 确认进入下一局
+        for hi in msg.hules:
+            seat = hi.seat
+            is_tsumo = hi.zimo
+            who = '我' if seat == gs.seat else f'玩家{seat}'
+            logger.info(f"  {who}: {'自摸' if is_tsumo else '荣和'}")
+            display.show_win(gs, seat, hi.hu_tile, is_tsumo=is_tsumo, scores=scores)
+
+        # 等一下再确认进入下一局
         delay = self.human.get_new_round_delay()
         await asyncio.sleep(delay)
-        await self.client.confirm_new_round()
+        try:
+            await self.client.confirm_new_round()
+        except Exception as e:
+            logger.debug(f"confirm_new_round: {e}")
 
     async def _handle_notile(self, data: bytes) -> None:
-        """流局"""
-        logger.info("流局")
+        """荒牌流局 — 使用 ActionNoTile"""
+        msg = pb.ActionNoTile()
+        msg.ParseFromString(data)
+
+        logger.info("📭 荒牌流局")
         display.show_ryuukyoku(self.game_state, "荒牌流局")
+
         delay = self.human.get_new_round_delay()
         await asyncio.sleep(delay)
-        await self.client.confirm_new_round()
+        try:
+            await self.client.confirm_new_round()
+        except Exception as e:
+            logger.debug(f"confirm_new_round: {e}")
 
     async def _handle_liuju(self, data: bytes) -> None:
-        """中途流局（九种九牌等）"""
-        logger.info("中途流局")
-        display.show_ryuukyoku(self.game_state, "中途流局")
+        """中途流局 — 使用 ActionLiuJu"""
+        msg = pb.ActionLiuJu()
+        msg.ParseFromString(data)
+
+        types = {1: '九种九牌', 2: '四风连打', 3: '四杠散了', 4: '四家立直'}
+        reason = types.get(msg.type, f'流局({msg.type})')
+        logger.info(f"🌊 {reason}")
+        display.show_ryuukyoku(self.game_state, reason)
+
         delay = self.human.get_new_round_delay()
         await asyncio.sleep(delay)
-        await self.client.confirm_new_round()
+        try:
+            await self.client.confirm_new_round()
+        except Exception as e:
+            logger.debug(f"confirm_new_round: {e}")
 
     async def _on_game_end(self, data: bytes) -> None:
         """对局结束"""
         self._in_game = False
+
+        try:
+            msg = pb.NotifyGameEndResult()
+            msg.ParseFromString(data)
+            d = MessageToDict(msg, preserving_proto_field_name=True)
+            players = d.get('result', {}).get('players', [])
+            scores = [0] * (self.game_state.player_count if self.game_state else 4)
+            for p in players:
+                seat = p.get('seat', 0)
+                if seat < len(scores):
+                    scores[seat] = p.get('total_point', 0)
+            display.show_game_end(self.game_state, scores)
+        except Exception:
+            logger.info("🏁 对局结束!")
+
         self.ai.on_game_end({})
-        scores = [p.score for p in self.game_state.players] if self.game_state else None
-        display.show_game_end(self.game_state, scores)
-        logger.info("=== 对局结束 ===")
         self._game_end_event.set()
 
     # ─── 决策 ──────────────────────────────────────
@@ -352,13 +527,14 @@ class MajsoulBot:
         action = self.ai.decide_action(gs, operation)
 
         if action is None:
-            # 跳过 — 也要模拟思考时间
+            # 跳过
             delay = self.human.get_skip_delay()
             display.show_action_decision("skip")
             logger.debug(f"跳过操作 (等待 {delay:.1f}s)")
             await asyncio.sleep(delay)
             await self.client.skip_action()
-            # 如果有出牌操作（type=1），需要出牌
+
+            # 如果有出牌操作(type=1)，需要自己出牌
             op_list = operation.get("operation_list", [])
             has_discard = any(op.get("type") == 1 for op in op_list)
             if has_discard:
@@ -373,14 +549,12 @@ class MajsoulBot:
             call = "tsumo" if action_type == 8 else "ron"
             display.show_action_decision(call)
             delay = self.human.get_call_delay(call)
-            logger.debug(f"和牌 (等待 {delay:.1f}s)")
             await asyncio.sleep(delay)
             await self.client.win(action_type)
         elif action_type == 7:
             # 立直
             display.show_action_decision("riichi")
             delay = self.human.get_riichi_delay()
-            logger.debug(f"立直 (等待 {delay:.1f}s)")
             await asyncio.sleep(delay)
             tile = action.get("tile", "")
             if not tile:
@@ -393,14 +567,11 @@ class MajsoulBot:
             combination = action.get("combination", [])
             display.show_action_decision(call, display.format_tiles(combination))
             delay = self.human.get_call_delay(call)
-            logger.debug(f"{call} (等待 {delay:.1f}s)")
             await asyncio.sleep(delay)
-            combination = action.get("combination", [])
             await self.client.chi_peng_gang(action_type, combination)
         elif action_type in [4, 6]:
             # 暗杠/加杠
             delay = self.human.get_call_delay("kan")
-            logger.debug(f"杠 (等待 {delay:.1f}s)")
             await asyncio.sleep(delay)
             combination = action.get("combination", [])
             await self.client.chi_peng_gang(action_type, combination)
@@ -418,21 +589,31 @@ class MajsoulBot:
         tile = self.ai.decide_discard(gs)
         is_moqie = (tile == gs.draw)
 
-        # 人类化延迟
+        # 验证出牌合法性
+        full_hand = gs.get_full_hand()
+        if tile not in full_hand:
+            logger.warning(f"⚠️ AI 选择的牌 {tile} 不在手牌中! 手牌: {full_hand}")
+            # fallback: 打摸到的牌
+            if gs.draw:
+                tile = gs.draw
+                is_moqie = True
+            elif gs.hand:
+                tile = gs.hand[-1]
+                is_moqie = False
+            else:
+                logger.error("无牌可打!")
+                return
+
         delay = self.human.get_discard_delay(
             is_tsumogiri=is_moqie,
             hand_size=len(gs.hand),
             is_riichi=gs.players[gs.seat].riichi,
         )
         display.show_action_decision("discard", display.format_tile(tile))
-        logger.debug(f"出牌 {'摸切' if is_moqie else '手切'} (等待 {delay:.1f}s)")
+        logger.info(f"出牌: {tile} ({'摸切' if is_moqie else '手切'}) [手牌: {gs.hand}, draw: {gs.draw}]")
         await asyncio.sleep(delay)
         self.human.on_action()
         await self.client.discard_tile(tile, moqie=is_moqie)
-
-
-# 需要 import random
-import random
 
 
 async def main():
@@ -446,7 +627,6 @@ async def main():
 
     bot = MajsoulBot(args.config)
 
-    # 优雅退出
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda: setattr(bot, '_running', False))
