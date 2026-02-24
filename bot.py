@@ -22,17 +22,27 @@ logger = logging.getLogger("majsoul")
 WIND = ['东', '南', '西', '北']
 
 
+def _create_ai(config):
+    """根据配置创建 AI 实例"""
+    ai_type = config.ai.type
+    if ai_type == "mortal":
+        from ai.mortal import MortalAI
+        mortal_dir = getattr(config.ai, 'mortal_dir', None)
+        return MortalAI(mortal_dir)
+    elif ai_type == "shanten":
+        return ShantenAI()
+    else:
+        return BasicAI()
+
+
 class MajsoulBot:
     """机器人主控制器"""
 
     def __init__(self, config_path: str = "config.yaml"):
         self.config = load_config(config_path)
         self.client = MajsoulClient()
+        self.ai = _create_ai(self.config)
         ai_type = self.config.ai.type
-        if ai_type == "shanten":
-            self.ai = ShantenAI()
-        else:
-            self.ai = BasicAI()
         logger.info(f"AI 引擎: {ai_type}")
         self.human = HumanBehavior()
         self.game_state: GameState | None = None
@@ -40,6 +50,7 @@ class MajsoulBot:
         self._running = True
         self._in_game = False
         self._game_end_event = asyncio.Event()
+        self._is_mortal = (ai_type == "mortal")
 
     async def run(self) -> None:
         """主运行循环"""
@@ -161,6 +172,11 @@ class MajsoulBot:
         if not self.game_state:
             logger.warning("重连但没有游戏状态，无法恢复")
             return
+
+        # 断线重连时 Mortal 状态无法同步，切换到 ShantenAI fallback
+        if self._is_mortal:
+            logger.warning("断线重连: Mortal 无法同步历史状态，本局使用 ShantenAI")
+            self.ai._force_fallback()
 
         actions = game_restore.actions
         logger.info(f"🔄 重放 {len(actions)} 个动作恢复状态...")
@@ -339,6 +355,10 @@ class MajsoulBot:
 
         gs = self.game_state
 
+        # 通知 Mortal AI（所有玩家的摸牌都要通知）
+        if self._is_mortal:
+            self.ai.send_tsumo(seat, tile if seat == gs.seat else None)
+
         if seat != gs.seat:
             # 他家摸牌
             gs.tiles_left = left
@@ -379,6 +399,15 @@ class MajsoulBot:
             logger.info(f"服务端确认自家出牌: {tile} (moqie={is_draw})")
 
         gs = self.game_state
+
+        # 通知 Mortal AI（包括立直宣言，所有玩家的出牌都要通知）
+        if self._is_mortal:
+            if is_riichi:
+                self.ai.send_reach(seat)
+            self.ai.send_dahai(seat, tile, is_draw)
+            if is_riichi:
+                self.ai.send_reach_accepted(seat)
+
         gs.on_discard(seat, tile, is_draw, is_riichi)
         display.show_discard(gs, seat, tile, is_tsumogiri=is_draw, is_riichi=is_riichi)
 
@@ -402,6 +431,21 @@ class MajsoulBot:
         froms = list(msg.froms)
 
         gs = self.game_state
+
+        # 通知 Mortal AI
+        if self._is_mortal:
+            # froms 里找到被吃/碰的来源
+            target = froms[-1] if froms else (seat - 1) % gs.player_count
+            # tiles 里最后一张是被吃/碰的牌
+            pai = tiles[-1] if tiles else ""
+            consumed = tiles[:-1] if tiles else []
+            if type_ == 0:  # 吃
+                self.ai.send_chi(seat, target, pai, consumed)
+            elif type_ == 1:  # 碰
+                self.ai.send_pon(seat, target, pai, consumed)
+            elif type_ == 2:  # 大明杠
+                self.ai.send_daiminkan(seat, target, pai, consumed)
+
         gs.on_chi_peng_gang(seat, type_, tiles, froms)
         type_names = {0: "吃", 1: "碰", 2: "杠"}
         display.show_call(gs, seat, type_names.get(type_, "?"), tiles)
@@ -427,8 +471,13 @@ class MajsoulBot:
         gs = self.game_state
         if type_ == 2:
             gs.on_ankan(seat, [tiles_str] if isinstance(tiles_str, str) else list(tiles_str))
+            if self._is_mortal:
+                consumed = [tiles_str] * 4 if isinstance(tiles_str, str) else list(tiles_str)
+                self.ai.send_ankan(seat, consumed)
         elif type_ == 3:
             gs.on_kakan(seat, tiles_str)
+            if self._is_mortal:
+                self.ai.send_kakan(seat, tiles_str, [])
 
         who = '我' if seat == gs.seat else f'玩家{seat}'
         names = {2: '暗杠', 3: '加杠'}
@@ -458,6 +507,14 @@ class MajsoulBot:
             logger.info(f"  {who}: {'自摸' if is_tsumo else '荣和'}")
             display.show_win(gs, seat, hi.hu_tile, is_tsumo=is_tsumo, scores=scores)
 
+        # 通知 Mortal 和牌/局结束
+        if self._is_mortal:
+            for hi in msg.hules:
+                self.ai.send_hora(hi.seat,
+                                  hi.seat if hi.zimo else gs.seat,  # target 简化
+                                  hi.hu_tile)
+            self.ai.send_end_kyoku()
+
         # 等一下再确认进入下一局
         delay = self.human.get_new_round_delay()
         await asyncio.sleep(delay)
@@ -473,6 +530,10 @@ class MajsoulBot:
 
         logger.info("📭 荒牌流局")
         display.show_ryuukyoku(self.game_state, "荒牌流局")
+
+        if self._is_mortal:
+            self.ai.send_ryukyoku()
+            self.ai.send_end_kyoku()
 
         delay = self.human.get_new_round_delay()
         await asyncio.sleep(delay)
