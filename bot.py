@@ -13,6 +13,7 @@ from codec import decode as xor_decode
 from config import load_config
 from game_state import GameState
 from ai.basic import BasicAI
+from ai.shanten import ShantenAI
 from human_like import HumanBehavior
 import display
 
@@ -27,7 +28,12 @@ class MajsoulBot:
     def __init__(self, config_path: str = "config.yaml"):
         self.config = load_config(config_path)
         self.client = MajsoulClient()
-        self.ai = BasicAI()
+        ai_type = self.config.ai.type
+        if ai_type == "shanten":
+            self.ai = ShantenAI()
+        else:
+            self.ai = BasicAI()
+        logger.info(f"AI 引擎: {ai_type}")
         self.human = HumanBehavior()
         self.game_state: GameState | None = None
         self.games_played = 0
