@@ -457,7 +457,7 @@ class MajsoulBot:
 
         who = '我' if seat == gs.seat else f'玩家{seat}'
         names = {2: '暗杠', 3: '加杠'}
-        logger.info(f"{who} {names.get(type_, f'杠{type_}')}: {tiles_str}")
+        logger.info(f"{who} {names.get(type_, f'杠{type_}')}: {tiles_str} (raw type={type_})")
 
         # 可能有抢杠和
         if msg.operation and msg.operation.operation_list:
