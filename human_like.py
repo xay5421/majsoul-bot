@@ -50,29 +50,29 @@ class HumanBehavior:
     def get_discard_delay(self, is_tsumogiri: bool = False,
                           hand_size: int = 13,
                           is_riichi: bool = False) -> float:
-        """出牌延迟 — 快速但带随机扰动"""
+        """出牌延迟"""
         if is_riichi or is_tsumogiri:
-            return random.uniform(0.1, 0.4)
+            return random.uniform(1.0, 2.0)
         # 手切
-        return random.uniform(0.2, 0.6)
+        return random.uniform(1.5, 3.0)
 
     def get_call_delay(self, call_type: str = "pon") -> float:
         """吃碰杠的反应延迟"""
         if call_type in ("ron", "tsumo"):
-            return random.uniform(0.2, 0.5)
-        return random.uniform(0.3, 0.7)
+            return random.uniform(0.8, 1.5)
+        return random.uniform(1.0, 2.5)
 
     def get_skip_delay(self) -> float:
         """跳过操作的延迟"""
-        return random.uniform(0.05, 0.2)
+        return random.uniform(0.3, 1.0)
 
     def get_riichi_delay(self) -> float:
         """立直决策延迟"""
-        return random.uniform(0.3, 0.8)
+        return random.uniform(1.5, 3.0)
 
     def get_new_round_delay(self) -> float:
         """新一局确认延迟"""
-        return random.uniform(0.5, 1.2)
+        return random.uniform(1.0, 2.5)
 
     def should_emoji(self) -> bool:
         """是否发表情（偶尔互动一下）"""
