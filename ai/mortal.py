@@ -99,6 +99,8 @@ class MortalAI(BaseAI):
             logger.info("新一局开始，重启 Mortal 进程")
             self._fallback = None
         self._start_process()
+
+    def _start_process(self):
         """启动 Mortal 子进程"""
         if self.process and self.process.poll() is None:
             self.process.kill()

@@ -185,24 +185,8 @@ class MajsoulBot:
             action_name = action_proto.name
             raw_data = action_proto.data
             
-            # GameRestore 的 actions 可能未经 XOR 编码，也可能经过
-            # 先尝试直接解析，失败则尝试 XOR 解码
-            action_data = raw_data
-            if action_name == "ActionNewRound":
-                try:
-                    test = pb.ActionNewRound()
-                    test.ParseFromString(raw_data)
-                    if not test.tiles:  # 直接解析没有 tiles，说明数据有误
-                        action_data = xor_decode(raw_data)
-                except Exception:
-                    action_data = xor_decode(raw_data)
-            else:
-                try:
-                    # 简单验证：如果直接解析 protobuf 不报错就用原始数据
-                    test = pb.ActionDealTile()
-                    test.ParseFromString(raw_data)
-                except Exception:
-                    action_data = xor_decode(raw_data)
+            # GameRestore 里的 action data 都是 XOR 编码的（和实时推送一致）
+            action_data = xor_decode(raw_data)
 
             try:
                 # 重放时只更新状态，不做决策
@@ -253,15 +237,7 @@ class MajsoulBot:
         if actions:
             last = actions[-1]
             last_name = last.name
-            # GameRestore 的 actions 可能未经 XOR 编码
-            last_data = last.data
-            try:
-                # 先尝试直接解析（未编码）
-                test_msg = pb.ActionDealTile()
-                test_msg.ParseFromString(last_data)
-            except Exception:
-                # 如果失败，尝试 XOR 解码
-                last_data = xor_decode(last.data)
+            last_data = xor_decode(last.data)
 
             try:
                 # 如果最后是 DealTile 且轮到我，需要出牌
