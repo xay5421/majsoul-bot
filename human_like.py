@@ -50,16 +50,11 @@ class HumanBehavior:
     def get_discard_delay(self, is_tsumogiri: bool = False,
                           hand_size: int = 13,
                           is_riichi: bool = False) -> float:
-        """出牌延迟 — 缩短版，避免服务端超时自动出牌"""
-        if is_riichi:
-            return max(0.2, random.gauss(0.3, 0.1))
-
-        if is_tsumogiri:
-            return max(0.2, random.gauss(0.4, 0.15))
-        else:
-            # 手切：稍微思考
-            base = random.gauss(0.8, 0.3)
-            return max(0.3, base * self._fatigue_factor)
+        """出牌延迟 — 最小化，避免服务端超时"""
+        if is_riichi or is_tsumogiri:
+            return 0.1
+        # 手切稍微等一下
+        return max(0.2, random.gauss(0.4, 0.15))
 
     def get_call_delay(self, call_type: str = "pon") -> float:
         """吃碰杠的反应延迟 — 缩短版"""
