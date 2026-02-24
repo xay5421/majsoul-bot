@@ -1069,11 +1069,8 @@ class MajsoulBot:
         action = self.ai.decide_action(gs, operation)
 
         if action is None:
-            # 跳过
-            delay = self.human.get_skip_delay()
+            # 跳过 — 不加 delay，直接发送，给后续出牌留时间
             display.show_action_decision("skip")
-            logger.debug(f"跳过操作 (等待 {delay:.1f}s)")
-            await asyncio.sleep(delay)
             await self.client.skip_action()
 
             # 如果有出牌操作(type=1)，需要自己出牌
