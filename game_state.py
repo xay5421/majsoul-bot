@@ -159,6 +159,20 @@ class GameState:
                 self.draw = None
             elif tile in self.hand:
                 self.hand.remove(tile)
+            else:
+                # 重连恢复时手牌可能不同步，用赤牌别名再找一次
+                norm = normalize_aka(tile)
+                found = False
+                for i, h in enumerate(self.hand):
+                    if normalize_aka(h) == norm:
+                        self.hand.pop(i)
+                        found = True
+                        break
+                if not found:
+                    logger.debug(
+                        f"出牌 {tile} 不在手牌中 (可能是重连恢复), "
+                        f"手牌: {self.hand}"
+                    )
             # 如果打的不是摸的牌，把摸的牌加入手牌
             if self.draw is not None:
                 self.hand.append(self.draw)
