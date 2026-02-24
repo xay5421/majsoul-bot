@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 config.yaml
 *.log
+game_live.log
+match_log_*.txt
 mortal/mortal.pth
 mortal/libriichi.so
 mortal/*.pyd

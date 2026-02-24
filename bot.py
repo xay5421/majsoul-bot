@@ -16,6 +16,7 @@ from ai.basic import BasicAI
 from ai.shanten import ShantenAI
 from human_like import HumanBehavior
 import display
+from tiles import tile_to_str, tiles_to_str, sort_tiles
 
 logger = logging.getLogger("majsoul")
 
@@ -52,6 +53,11 @@ class MajsoulBot:
         self._game_end_event = asyncio.Event()
         self._is_mortal = (ai_type == "mortal")
 
+    def _live(self, msg: str) -> None:
+        """写入对局实况日志 (game_live.log)"""
+        if hasattr(self, '_live_log'):
+            self._live_log.info(msg)
+
     async def run(self) -> None:
         """主运行循环"""
         log_level = getattr(logging, self.config.run.log_level, logging.INFO)
@@ -60,6 +66,16 @@ class MajsoulBot:
             format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
             datefmt="%H:%M:%S",
         )
+
+        # 对局实况日志 — 写到文件，方便 tail -f 查看
+        self._live_log = logging.getLogger("majsoul.live")
+        self._live_log.setLevel(logging.INFO)
+        self._live_log.propagate = False  # 不传播到 root logger
+        live_handler = logging.FileHandler("game_live.log", mode="w", encoding="utf-8")
+        live_handler.setFormatter(logging.Formatter(
+            "%(asctime)s │ %(message)s", datefmt="%H:%M:%S"
+        ))
+        self._live_log.addHandler(live_handler)
 
         logger.info("🀄 雀魂机器人启动")
 
@@ -206,7 +222,10 @@ class MajsoulBot:
                     msg.ParseFromString(action_data)
                     if msg.seat == self.game_state.seat and msg.tile:
                         self.game_state.on_draw(msg.seat, msg.tile)
-                    self.game_state.tiles_left = msg.left_tile_count
+                    elif msg.seat != self.game_state.seat:
+                        self.game_state.tiles_left -= 1
+                    if msg.left_tile_count:
+                        self.game_state.tiles_left = msg.left_tile_count
                 elif action_name == "ActionDiscardTile":
                     msg = pb.ActionDiscardTile()
                     msg.ParseFromString(action_data)
@@ -231,6 +250,13 @@ class MajsoulBot:
                 logger.debug(f"重放 {action_name} 出错 (可忽略): {e}")
 
         logger.info("✅ 状态恢复完成")
+        gs = self.game_state
+        logger.info(
+            f"恢复后手牌 ({len(gs.hand)}张): "
+            f"{tiles_to_str(sort_tiles(gs.hand))}"
+            f"{' | 摸牌: ' + tile_to_str(gs.draw) if gs.draw else ''}"
+            f" | 牌山剩余: {gs.tiles_left}"
+        )
         display.show_round_start(self.game_state)
 
         # 恢复后检查最后一个 action 是否需要我们响应
@@ -311,6 +337,20 @@ class MajsoulBot:
         self.ai.on_round_start(gs)
         display.show_round_start(gs)
 
+        wind = '东南西北'[gs.round_wind]
+        my_wind = '东南西北'[gs.my_wind]
+        hand_str = tiles_to_str(sort_tiles(gs.hand))
+        draw_str = f" | 摸牌: {tile_to_str(gs.draw)}" if gs.draw else ""
+        scores_str = " / ".join(f"P{i}:{p.score}" for i, p in enumerate(gs.players))
+        self._live(
+            f"{'='*50}\n"
+            f"         │ 🀄 {wind}{gs.round_num+1}局 {gs.honba}本场  "
+            f"自风={my_wind} 座位={gs.seat}\n"
+            f"         │ 手牌: {hand_str}{draw_str}\n"
+            f"         │ 宝牌: {tiles_to_str(gs.dora_indicators)}  "
+            f"分数: {scores_str}"
+        )
+
         # 庄家14张或有操作时需要出牌/决策
         if msg.operation and msg.operation.operation_list:
             op = MessageToDict(msg.operation, preserving_proto_field_name=True)
@@ -388,6 +428,12 @@ class MajsoulBot:
         display.show_discard(gs, seat, tile, is_tsumogiri=is_draw, is_riichi=is_riichi)
 
         if seat == gs.seat:
+            moqie = " (摸切)" if is_draw else ""
+            riichi = " [立直]" if is_riichi else ""
+            self._live(
+                f"[巡{gs.turn:2d}] 我打: {tile_to_str(tile)}{moqie}{riichi} "
+                f"| 手牌: {tiles_to_str(sort_tiles(gs.hand))}"
+            )
             return  # 自己出的牌不需要响应
 
         # 是否有操作可以执行（吃碰杠荣和）
@@ -424,7 +470,10 @@ class MajsoulBot:
 
         gs.on_chi_peng_gang(seat, type_, tiles, froms)
         type_names = {0: "吃", 1: "碰", 2: "杠"}
-        display.show_call(gs, seat, type_names.get(type_, "?"), tiles)
+        call_name = type_names.get(type_, "?")
+        display.show_call(gs, seat, call_name, tiles)
+        who = '我' if seat == gs.seat else f'玩家{seat}'
+        self._live(f"[巡{gs.turn:2d}] {who} {call_name}: {tiles_to_str(tiles)}")
 
         # 吃碰后可能有操作（如需要出牌）
         if msg.operation and msg.operation.operation_list:
@@ -480,8 +529,24 @@ class MajsoulBot:
             seat = hi.seat
             is_tsumo = hi.zimo
             who = '我' if seat == gs.seat else f'玩家{seat}'
-            logger.info(f"  {who}: {'自摸' if is_tsumo else '荣和'}")
+            win_type = '自摸' if is_tsumo else '荣和'
+            logger.info(f"  {who}: {win_type}")
             display.show_win(gs, seat, hi.hu_tile, is_tsumo=is_tsumo, scores=scores)
+            fan_names = [f.name for f in hi.fans] if hi.fans else []
+            self._live(
+                f"🎊 {who}{win_type} {tile_to_str(hi.hu_tile)}"
+                f"{' 役: ' + ', '.join(fan_names) if fan_names else ''}"
+            )
+
+        if scores and gs:
+            parts = []
+            for i in range(gs.player_count):
+                old = gs.players[i].score
+                new = scores[i] if i < len(scores) else old
+                d_val = new - old
+                me = " ←" if i == gs.seat else ""
+                parts.append(f"P{i}:{old}→{new}({d_val:+d}){me}")
+            self._live(f"分数: {' / '.join(parts)}")
 
         # 通知 Mortal 和牌/局结束
         if self._is_mortal:
@@ -506,6 +571,7 @@ class MajsoulBot:
 
         logger.info("📭 荒牌流局")
         display.show_ryuukyoku(self.game_state, "荒牌流局")
+        self._live("📭 荒牌流局")
 
         if self._is_mortal:
             self.ai.send_ryukyoku()
@@ -527,6 +593,7 @@ class MajsoulBot:
         reason = types.get(msg.type, f'流局({msg.type})')
         logger.info(f"🌊 {reason}")
         display.show_ryuukyoku(self.game_state, reason)
+        self._live(f"🌊 {reason}")
 
         delay = self.human.get_new_round_delay()
         await asyncio.sleep(delay)
@@ -550,6 +617,13 @@ class MajsoulBot:
                 if seat < len(scores):
                     scores[seat] = p.get('total_point', 0)
             display.show_game_end(self.game_state, scores)
+            # 写入实况日志
+            ranked = sorted(enumerate(scores), key=lambda x: -x[1])
+            lines = ["🏁 对局结束!"]
+            for rank, (i, sc) in enumerate(ranked):
+                me = " ← 自家" if self.game_state and i == self.game_state.seat else ""
+                lines.append(f"  第{rank+1}名 P{i}: {sc}{me}")
+            self._live("\n         │ ".join(lines))
         except Exception:
             logger.info("🏁 对局结束!")
 
