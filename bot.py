@@ -1178,9 +1178,17 @@ async def main():
 
     bot = MajsoulBot(args.config)
 
+    def _shutdown():
+        bot._running = False
+        # 取消心跳 task，让事件循环能退出
+        if hasattr(bot, '_heartbeat_task') and bot._heartbeat_task:
+            bot._heartbeat_task.cancel()
+        # 设置 game_end 让主循环的 wait 退出
+        bot._game_end_event.set()
+
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, lambda: setattr(bot, '_running', False))
+        loop.add_signal_handler(sig, _shutdown)
 
     await bot.run()
 
