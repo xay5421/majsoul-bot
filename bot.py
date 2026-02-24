@@ -893,6 +893,10 @@ class MajsoulBot:
         who = '我' if seat == gs.seat else f'玩家{seat}'
         self._live(f"[巡{gs.turn:2d}] {who} {call_name}: {tiles_to_str(tiles)}")
 
+        # 自家副露后需要出牌，重置确认标记
+        if seat == gs.seat:
+            self._discard_confirmed = False
+
         # 吃碰后可能有操作（如需要出牌）
         if msg.operation and msg.operation.operation_list:
             op = MessageToDict(msg.operation, preserving_proto_field_name=True)
