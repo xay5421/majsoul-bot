@@ -64,6 +64,7 @@ class MortalAI(BaseAI):
         self._reach_pending: bool = False
         self._fallback: BaseAI | None = None  # fallback AI
         self._game_active = False
+        self._mjai_log: list[str] = []  # 记录所有发送给 Mortal 的事件
         logger.info(f"MortalAI: mortal_dir={self.mortal_dir}")
 
     @staticmethod
@@ -138,6 +139,11 @@ class MortalAI(BaseAI):
                     stderr = self.process.stderr.read()
                     if stderr:
                         logger.error(f"Mortal 崩溃原因: {stderr[:500]}")
+                        # dump mjai 事件日志用于排查
+                        log_file = "mortal_crash.log"
+                        with open(log_file, "w") as f:
+                            f.write("\n".join(self._mjai_log))
+                        logger.error(f"Mortal 事件日志已保存到 {log_file} ({len(self._mjai_log)} 条)")
                         self.process = None  # 清理，避免重复读
                 except Exception:
                     pass
@@ -145,6 +151,7 @@ class MortalAI(BaseAI):
             return None
 
         line = json.dumps(event, ensure_ascii=False)
+        self._mjai_log.append(line)
         logger.debug(f"→ Mortal: {line}")
         try:
             self.process.stdin.write(line + "\n")
@@ -201,6 +208,7 @@ class MortalAI(BaseAI):
         """新一局开始：发送 start_kyoku"""
         self._last_reaction = None
         self._reach_pending = False
+        self._mjai_log = []  # 新一局清空事件日志
 
         # 如果之前 fallback 了（断线重连/崩溃），新一局重启 Mortal
         if self._fallback is not None or self.process is None or self.process.poll() is not None:
