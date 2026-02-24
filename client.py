@@ -34,6 +34,10 @@ class MajsoulClient:
         self._event_handlers: dict[str, list] = {}
         self._username: str = ""
         self._password: str = ""
+        self._last_connect_token: str = ""
+        self._last_game_uuid: str = ""
+        self._game_disconnected = asyncio.Event()  # game server 断线信号
+        self._in_game: bool = False  # 是否在对局中
 
     # ─── 连接 ─────────────────────────────────────
 
@@ -55,24 +59,36 @@ class MajsoulClient:
                 gateways = config["ip"][0]["gateways"]
                 logger.info(f"路由网关数: {len(gateways)}")
 
-            # 通过路由 API 获取可用节点
-            gateway = random.choice(gateways)
-            gateway_url = gateway["url"]
-            async with session.get(
-                f"{gateway_url}/api/clientgate/routes"
-                f"?platform=Web&version={version_clean}"
-            ) as res:
-                route_data = await res.json()
-                routes = route_data["data"]["routes"]
-                # 选一个空闲的路由
-                idle_routes = [r for r in routes if r["state"] == "idle"]
-                if not idle_routes:
-                    idle_routes = routes
-                route = random.choice(idle_routes)
-                domain = route["domain"]
-                ssl = route.get("ssl", True)
-                scheme = "wss" if ssl else "ws"
-                endpoint = f"{scheme}://{domain}/"
+            # 通过路由 API 获取可用节点（带重试）
+            route_data = None
+            for _attempt in range(3):
+                gateway = random.choice(gateways)
+                gateway_url = gateway["url"]
+                try:
+                    async with session.get(
+                        f"{gateway_url}/api/clientgate/routes"
+                        f"?platform=Web&version={version_clean}",
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as res:
+                        route_data = await res.json()
+                        break
+                except Exception as e:
+                    logger.warning(f"路由 {gateway_url} 失败: {e}")
+                    await asyncio.sleep(2)
+            
+            if not route_data:
+                raise ConnectionError("所有路由节点不可用")
+            
+            routes = route_data["data"]["routes"]
+            # 选一个空闲的路由
+            idle_routes = [r for r in routes if r["state"] == "idle"]
+            if not idle_routes:
+                idle_routes = routes
+            route = random.choice(idle_routes)
+            domain = route["domain"]
+            ssl = route.get("ssl", True)
+            scheme = "wss" if ssl else "ws"
+            endpoint = f"{scheme}://{domain}/"
 
         logger.info(f"连接网关: {endpoint}")
         self.channel = MSRPCChannel(endpoint)
@@ -231,19 +247,102 @@ class MajsoulClient:
             logger.error(f"重连对局失败: {e}")
             return False
 
+    async def _on_game_server_disconnect(self) -> None:
+        """game server WebSocket 断线回调"""
+        logger.warning("⚠️ 对局服务器连接断开!")
+        self._game_disconnected.set()
+
+    async def auto_reconnect_game(self, max_retries: int = 3,
+                                   retry_interval: int = 5) -> bool:
+        """对局中途断线自动重连
+        
+        通过 lobby 查询残留对局信息，重新连接 game server。
+        
+        Returns:
+            True 如果重连成功
+        """
+        for attempt in range(1, max_retries + 1):
+            logger.info(f"🔄 尝试重连对局 ({attempt}/{max_retries})...")
+            try:
+                # 通过 lobby 查残留对局
+                gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
+                gd = MessageToDict(gi, preserving_proto_field_name=True)
+                game_info = gd.get("game_info", {})
+                
+                if not game_info.get("connect_token"):
+                    logger.warning("未找到残留对局，可能对局已结束")
+                    return False
+                
+                connect_token = game_info["connect_token"]
+                game_uuid = game_info["game_uuid"]
+                logger.info(f"找到残留对局: {game_uuid[:30]}...")
+                
+                # 重连
+                success = await self._reconnect_game(connect_token, game_uuid)
+                if success:
+                    logger.info("✅ 对局重连成功!")
+                    self._game_disconnected.clear()
+                    return True
+            except Exception as e:
+                logger.error(f"重连尝试 {attempt} 失败: {e}")
+            
+            if attempt < max_retries:
+                logger.info(f"等待 {retry_interval}s 后重试...")
+                await asyncio.sleep(retry_interval)
+        
+        logger.error(f"重连失败，已尝试 {max_retries} 次")
+        return False
+
     # ─── 心跳 ─────────────────────────────────────
 
-    async def heartbeat_loop(self, interval: int = 30) -> None:
-        """心跳保活循环"""
+    async def heartbeat_loop(self, interval: int = 15) -> None:
+        """心跳保活循环 — 同时给 lobby 和 game server 发心跳
+        
+        interval 设为 15 秒，因为禁用了 websockets 内建 ping，
+        需要靠应用层心跳来检测连接存活。
+        """
+        game_fail_count = 0
+        lobby_fail_count = 0
         while True:
+            # lobby 心跳
             try:
                 req = pb.ReqHeatBeat()
                 req.no_operation_counter = 0
-                await self.lobby.heatbeat(req)
-                logger.debug("心跳 OK")
+                await asyncio.wait_for(self.lobby.heatbeat(req), timeout=10)
+                logger.debug("心跳 OK (lobby)")
+                lobby_fail_count = 0
+            except asyncio.CancelledError:
+                raise  # 让 task cancel 正常传播
             except Exception as e:
-                logger.warning(f"心跳失败: {e}")
-            await asyncio.sleep(interval)
+                lobby_fail_count += 1
+                logger.warning(f"心跳失败 (lobby, 连续{lobby_fail_count}次): {e}")
+                if lobby_fail_count >= 5:
+                    logger.error("lobby 心跳连续5次失败，连接已断开，退出心跳循环")
+                    break
+            
+            # game server 心跳 (FastTest 用 checkNetworkDelay，不是 heartbeat)
+            if self.fast_test and self._game_channel and self._game_channel.is_connected:
+                try:
+                    greq = pb.ReqCommon()
+                    await asyncio.wait_for(
+                        self.fast_test.check_network_delay(greq), timeout=10
+                    )
+                    logger.debug("心跳 OK (game)")
+                    game_fail_count = 0
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    game_fail_count += 1
+                    logger.warning(f"心跳失败 (game, 连续{game_fail_count}次): {e}")
+                    if game_fail_count >= 3:
+                        logger.error("game server 心跳连续3次失败，标记断线")
+                        self._game_disconnected.set()
+                        game_fail_count = 0
+            
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
 
     # ─── 匹配 ─────────────────────────────────────
 
@@ -460,6 +559,11 @@ class MajsoulClient:
         
         支持断线重连：enterGame 会返回 GameRestore 数据。
         """
+        # 保存连接信息用于重连
+        self._last_connect_token = connect_token
+        self._last_game_uuid = game_uuid
+        self._game_disconnected.clear()
+        
         import re
         m = re.match(r'(wss://[^/]+)', self.channel._endpoint)
         route_base = m.group(1) if m else 'wss://route-5.maj-soul.com:443'
@@ -491,6 +595,9 @@ class MajsoulClient:
         # 连接
         await self._game_channel.connect("https://game.maj-soul.com")
         logger.info("对局服务器连接成功")
+        
+        # 注册断线回调
+        self._game_channel.on_disconnect(self._on_game_server_disconnect)
 
         # 在新 channel 上创建 FastTest 服务
         self.fast_test = FastTest(self._game_channel)

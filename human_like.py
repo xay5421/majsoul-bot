@@ -50,86 +50,36 @@ class HumanBehavior:
     def get_discard_delay(self, is_tsumogiri: bool = False,
                           hand_size: int = 13,
                           is_riichi: bool = False) -> float:
-        """出牌延迟
-
-        Args:
-            is_tsumogiri: 是否摸切（摸什么打什么）
-            hand_size: 手牌数量
-            is_riichi: 是否已立直（立直后只能摸切）
-        """
+        """出牌延迟 — 缩短版，避免服务端超时自动出牌"""
         if is_riichi:
-            # 立直后强制摸切，但人类还是会看一眼
-            base = random.gauss(0.5, 0.2)
-            return max(0.3, base)
+            return max(0.2, random.gauss(0.3, 0.1))
 
         if is_tsumogiri:
-            # 摸切：有时很快（确定不要），有时会犹豫一下
-            if random.random() < 0.3:
-                # 30% 概率秒切
-                base = random.gauss(0.6, 0.15)
-            else:
-                base = random.gauss(1.2, 0.4)
+            return max(0.2, random.gauss(0.4, 0.15))
         else:
-            # 手切：需要思考打哪张
-            # 巡目越早选择越多，思考越久
-            complexity = min(hand_size / 13, 1.0)
-            base = random.gauss(1.5 + complexity * 1.5, 0.6)
-
-            # 偶尔长考（5% 概率）
-            if random.random() < 0.05:
-                base += random.gauss(3.0, 1.0)
-
-        return max(0.3, base * self._fatigue_factor)
+            # 手切：稍微思考
+            base = random.gauss(0.8, 0.3)
+            return max(0.3, base * self._fatigue_factor)
 
     def get_call_delay(self, call_type: str = "pon") -> float:
-        """吃碰杠的反应延迟
-
-        Args:
-            call_type: "chi" / "pon" / "kan" / "ron" / "tsumo"
-        """
+        """吃碰杠的反应延迟 — 缩短版"""
         if call_type in ("ron", "tsumo"):
-            # 和牌：通常很快点确认，但不能秒点
-            base = random.gauss(0.8, 0.3)
-        elif call_type == "pon":
-            # 碰：需要判断要不要碰
-            base = random.gauss(1.5, 0.5)
-        elif call_type == "chi":
-            # 吃：需要考虑吃哪组
-            base = random.gauss(1.8, 0.6)
-        elif call_type == "kan":
-            # 杠：需要考虑要不要杠
-            base = random.gauss(1.3, 0.4)
+            base = random.gauss(0.3, 0.1)
         else:
-            base = random.gauss(1.5, 0.5)
-
-        return max(0.3, base * self._fatigue_factor)
-
-    def get_skip_delay(self) -> float:
-        """跳过操作（不吃碰杠）的延迟
-
-        人类在看到可以操作时也需要时间决定"不操作"
-        """
-        # 有时候几乎不犹豫，有时候要想一下
-        if random.random() < 0.5:
-            base = random.gauss(0.4, 0.15)  # 快速跳过
-        else:
-            base = random.gauss(1.0, 0.3)   # 想了一下才跳过
-
+            base = random.gauss(0.5, 0.2)
         return max(0.2, base)
 
+    def get_skip_delay(self) -> float:
+        """跳过操作的延迟 — 缩短版"""
+        return max(0.1, random.gauss(0.3, 0.1))
+
     def get_riichi_delay(self) -> float:
-        """立直决策延迟 — 通常需要较长思考"""
-        base = random.gauss(2.5, 0.8)
-
-        # 20% 概率长考
-        if random.random() < 0.2:
-            base += random.gauss(2.0, 0.8)
-
-        return max(0.8, base * self._fatigue_factor)
+        """立直决策延迟"""
+        return max(0.3, random.gauss(0.8, 0.3))
 
     def get_new_round_delay(self) -> float:
-        """新一局确认延迟 — 看看上一局结果"""
-        return random.gauss(2.0, 0.5)
+        """新一局确认延迟"""
+        return random.gauss(1.0, 0.3)
 
     def should_emoji(self) -> bool:
         """是否发表情（偶尔互动一下）"""
