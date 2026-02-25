@@ -782,6 +782,27 @@ class MajsoulClient:
         req = pb.ReqCommon()
         await self.fast_test.confirm_new_round(req)
 
+    async def send_emoji(self, emo_id: int) -> None:
+        """发送游戏内表情
+        
+        通过 broadcastInGame 发送表情。
+        content 格式基于 GameUserInput 协议的 emo 字段。
+        
+        表情 ID 与角色相关：
+        - 基础表情: 1-9 (每个角色都有)
+        - 额外表情: 需要解锁 (Character.extra_emoji)
+        """
+        import json
+        req = pb.ReqBroadcastInGame()
+        # content 是 JSON 字符串，包含表情 ID
+        req.content = json.dumps({"emo": emo_id})
+        req.except_self = False
+        try:
+            await self.fast_test.broadcast_in_game(req)
+            logger.info(f"发送表情: emo_id={emo_id}")
+        except Exception as e:
+            logger.warning(f"发送表情失败: {e}")
+
     # ─── 工具方法 ──────────────────────────────────
 
     async def start_event_loop(self) -> None:

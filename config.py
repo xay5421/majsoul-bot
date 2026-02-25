@@ -34,11 +34,19 @@ class RunConfig:
 
 
 @dataclass
+class EmojiConfig:
+    enabled: bool = True
+    on_win: bool = True           # 和牌时发表情
+    win_emojis: list = field(default_factory=lambda: [2, 6, 7])
+
+
+@dataclass
 class Config:
     account: AccountConfig = field(default_factory=AccountConfig)
     match: MatchConfig = field(default_factory=MatchConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     run: RunConfig = field(default_factory=RunConfig)
+    emoji: EmojiConfig = field(default_factory=EmojiConfig)
 
 
 def load_config(path: str = "config.yaml") -> Config:
@@ -60,5 +68,7 @@ def load_config(path: str = "config.yaml") -> Config:
         config.ai = AIConfig(**raw["ai"])
     if "run" in raw:
         config.run = RunConfig(**raw["run"])
+    if "emoji" in raw:
+        config.emoji = EmojiConfig(**raw["emoji"])
 
     return config

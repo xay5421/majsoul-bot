@@ -1107,6 +1107,11 @@ class MajsoulBot:
                                   hi.hu_tile)
             self.ai.send_end_kyoku()
 
+        # 🎉 和牌时发表情
+        my_win = any(hi.seat == gs.seat for hi in msg.hules)
+        if my_win:
+            await self._send_win_emoji()
+
         # 等一下再确认进入下一局
         delay = self.human.get_new_round_delay()
         await asyncio.sleep(delay)
@@ -1114,6 +1119,27 @@ class MajsoulBot:
             await self.client.confirm_new_round()
         except Exception as e:
             logger.debug(f"confirm_new_round: {e}")
+
+    async def _send_win_emoji(self) -> None:
+        """和牌时发送表情庆祝"""
+        import random
+        # 读取表情配置
+        emoji_cfg = getattr(self.config, 'emoji', None)
+        if emoji_cfg is None or not getattr(emoji_cfg, 'enabled', True):
+            return
+        if not getattr(emoji_cfg, 'on_win', True):
+            return
+        
+        win_emojis = getattr(emoji_cfg, 'win_emojis', [2, 6, 7])
+        if not win_emojis:
+            return
+        
+        emo_id = random.choice(win_emojis)
+        try:
+            await asyncio.sleep(0.5)  # 稍等一下再发
+            await self.client.send_emoji(emo_id)
+        except Exception as e:
+            logger.debug(f"发送和牌表情失败: {e}")
 
     async def _handle_notile(self, data: bytes) -> None:
         """荒牌流局 — 使用 ActionNoTile"""
