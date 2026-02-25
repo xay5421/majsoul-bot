@@ -10,7 +10,7 @@ from datetime import datetime
 import ms.protocol_pb2 as pb
 from google.protobuf.json_format import MessageToDict
 
-from client import MajsoulClient
+from client import MajsoulClient, MatchError1023
 from codec import decode as xor_decode
 from config import load_config
 from game_state import GameState
@@ -180,10 +180,22 @@ class MajsoulBot:
                         await asyncio.sleep(10)
                         continue
                 else:
-                    success = await self.client.match(
-                        room_type=self.config.match.room_type,
-                        level=self.config.match.level,
-                    )
+                    try:
+                        success = await self.client.match(
+                            room_type=self.config.match.room_type,
+                            level=self.config.match.level,
+                        )
+                    except MatchError1023:
+                        logger.warning("账号仍在对局中 (1023)，尝试重连残留对局...")
+                        reconnected = await self.client.check_and_reconnect_game()
+                        if reconnected:
+                            logger.info("已重连残留对局，等待对局结束...")
+                            # 直接进入下面的等待对局结束逻辑
+                            success = True
+                        else:
+                            logger.error("重连残留对局也失败，等 30 秒再试...")
+                            await asyncio.sleep(30)
+                            continue
                     if not success:
                         logger.error("匹配失败，等待重试...")
                         await asyncio.sleep(10)

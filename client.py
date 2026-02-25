@@ -14,6 +14,11 @@ from ms.rpc import Lobby, FastTest
 import ms.protocol_pb2 as pb
 from codec import decode as xor_decode
 
+
+class MatchError1023(Exception):
+    """匹配失败：账号仍在对局中 (error code 1023)"""
+    pass
+
 logger = logging.getLogger("majsoul.client")
 
 MS_HOST = "https://game.maj-soul.com"
@@ -447,8 +452,11 @@ class MajsoulClient:
         res = await self.lobby.start_unified_match(req)
 
         if res.error and res.error.code:
-            logger.error(f"匹配失败: code={res.error.code}")
+            error_code = res.error.code
+            logger.error(f"匹配失败: code={error_code}")
             logger.error(f"完整响应: {MessageToDict(res, preserving_proto_field_name=True)}")
+            if error_code == 1023:
+                raise MatchError1023("账号仍在对局中，无法匹配")
             return False
 
         logger.info("匹配请求已发送，等待对手...")
