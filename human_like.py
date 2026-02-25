@@ -52,15 +52,15 @@ class HumanBehavior:
                           is_riichi: bool = False) -> float:
         """出牌延迟"""
         if is_riichi or is_tsumogiri:
-            return random.uniform(1.0, 2.0)
+            return random.uniform(0.3, 0.6)
         # 手切
-        return random.uniform(1.5, 3.0)
+        return random.uniform(0.5, 0.8)
 
     def get_call_delay(self, call_type: str = "pon") -> float:
         """吃碰杠的反应延迟"""
         if call_type in ("ron", "tsumo"):
-            return random.uniform(0.8, 1.5)
-        return random.uniform(1.0, 2.5)
+            return random.uniform(0.3, 0.5)
+        return random.uniform(0.3, 0.8)
 
     def get_skip_delay(self) -> float:
         """跳过操作的延迟"""
@@ -68,7 +68,7 @@ class HumanBehavior:
 
     def get_riichi_delay(self) -> float:
         """立直决策延迟"""
-        return random.uniform(1.5, 3.0)
+        return random.uniform(0.5, 1.0)
 
     def get_new_round_delay(self) -> float:
         """新一局确认延迟"""

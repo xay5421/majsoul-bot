@@ -691,8 +691,8 @@ class MajsoulBot:
                     msg = pb.ActionAnGangAddGang()
                     msg.ParseFromString(action_data)
                     
-                    tiles = list(msg.tiles) if msg.tiles else [msg.tile] * 4
-                    tile = msg.tile or (tiles[0] if tiles else "?")
+                    # proto 只有 tiles 字段（string），没有 tile
+                    tile = msg.tiles
                     
                     if msg.type == 3:  # 暗杠
                         # 处理赤牌：赤牌每种只有1张
