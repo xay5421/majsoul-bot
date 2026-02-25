@@ -959,19 +959,32 @@ class MajsoulBot:
         tiles_str = msg.tiles
 
         gs = self.game_state
+
+        # 检测 type=2 是否实际是加杠（玩家之前碰过这张牌）
+        actual_type = type_
         if type_ == 2:
+            player_melds = gs.players[seat].melds
+            has_pon = any(
+                m.type == "碰" and tiles_str in m.tiles
+                for m in player_melds
+            )
+            if has_pon:
+                actual_type = 3  # 实际是加杠
+                logger.info(f"暗杠修正: type=2 但玩家{seat}碰过 {tiles_str}，视为加杠")
+
+        if actual_type == 2:
             gs.on_ankan(seat, [tiles_str] if isinstance(tiles_str, str) else list(tiles_str))
             if self._is_mortal:
                 consumed = [tiles_str] * 4 if isinstance(tiles_str, str) else list(tiles_str)
                 self.ai.send_ankan(seat, consumed)
-        elif type_ == 3:
+        elif actual_type == 3:
             gs.on_kakan(seat, tiles_str)
             if self._is_mortal:
                 self.ai.send_kakan(seat, tiles_str, [])
 
         who = '我' if seat == gs.seat else f'玩家{seat}'
         names = {2: '暗杠', 3: '加杠'}
-        kan_name = names.get(type_, f'杠{type_}')
+        kan_name = names.get(actual_type, f'杠{type_}')
         logger.info(f"{who} {kan_name}: {tiles_str} (raw type={type_})")
         self._live(f"[巡{gs.turn:2d}] {who} {kan_name}: {tile_to_str(tiles_str)}")
 
