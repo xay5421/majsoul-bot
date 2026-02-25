@@ -1206,13 +1206,16 @@ class MajsoulBot:
             # 跳过操作
             op_list = operation.get("operation_list", [])
             has_discard = any(op.get("type") == 1 for op in op_list)
-            delay = self.human.get_skip_delay()
             display.show_action_decision("skip")
-            await asyncio.sleep(delay)
-            await self.client.skip_action()
 
             if has_discard:
+                # 跳过自摸/暗杠等但还要出牌 — 不加 delay，时限紧张
+                await self.client.skip_action()
                 await self._do_discard()
+            else:
+                # 纯跳过别人的牌（不吃碰杠荣）— 加短 delay
+                await asyncio.sleep(self.human.get_skip_delay())
+                await self.client.skip_action()
             return
 
         action_type = action.get("type", 0)
