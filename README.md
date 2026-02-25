@@ -220,3 +220,15 @@ A: 确认 Python 版本（3.10-3.12）和系统架构匹配。libriichi 是平�
 ## 免责声明
 
 本项目仅供学习研究，使用机器人违反雀魂服务条款，后果自负。
+
+## 致谢 & 许可
+
+本项目使用了以下开源项目，在此表示感谢：
+
+| 项目 | 作者 | 许可证 | 用途 |
+|------|------|--------|------|
+| [Mortal](https://github.com/Equim-chan/Mortal) | [Equim-chan](https://github.com/Equim-chan) | AGPL-3.0 | 麻将 AI 引擎（`Mortal/` 目录） |
+| [mahjong_soul_api](https://github.com/MahjongRepository/mahjong_soul_api) | MahjongRepository | MIT | 雀魂协议库（`ms/` 目录，vendored） |
+| [mjlog2mjai](https://github.com/fstqwq/mjlog2mjai) | [fstqwq](https://github.com/fstqwq) | MIT | 天凤牌谱转换（`Mortal/mortal/data/mjlog2mjai.py`） |
+
+本项目因包含 AGPL-3.0 许可的 Mortal 代码，整体以 **AGPL-3.0** 许可分发。详见 [Mortal/LICENSE](Mortal/LICENSE)。

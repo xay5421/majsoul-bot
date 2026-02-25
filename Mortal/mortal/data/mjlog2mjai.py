@@ -1,3 +1,7 @@
+# mjlog2mjai — 天凤 mjlog XML 转 mjai JSON 格式
+# 基于 https://github.com/fstqwq/mjlog2mjai (MIT License)
+# Copyright (c) fstqwq
+
 import gzip
 import xml.etree.ElementTree as ET
 
