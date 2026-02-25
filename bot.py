@@ -702,7 +702,7 @@ class MajsoulBot:
                             "consumed": consumed,
                         }
                     elif msg.type == 3:  # 加杠
-                        consumed = [ms_to_mjai(tile)] * 2  # 碰时 actor 手中的2张
+                        consumed = [ms_to_mjai(tile)] * 3  # 碰时的3张牌
                         event = {
                             "type": "kakan",
                             "actor": msg.seat,
@@ -978,12 +978,12 @@ class MajsoulBot:
                 consumed = [tiles_str] * 4 if isinstance(tiles_str, str) else list(tiles_str)
                 self.ai.send_ankan(seat, consumed)
         elif actual_type == 3:
-            # 加杠：从碰的 meld 中获取 consumed（碰时 actor 手中的2张牌）
-            pon_consumed = [tiles_str, tiles_str]  # 默认同名牌x2
+            # 加杠：从碰的 meld 中获取 consumed
+            # mjai 协议要求 kakan 的 consumed 是碰时的 3 张牌
+            pon_consumed = [tiles_str, tiles_str, tiles_str]  # 默认同名牌x3
             for m in gs.players[seat].melds:
                 if m.type == "碰" and tiles_str in m.tiles:
-                    # meld.tiles 是碰的3张，取同名牌x2
-                    pon_consumed = [t for t in m.tiles if t == tiles_str][:2]
+                    pon_consumed = list(m.tiles)[:3]
                     break
             gs.on_kakan(seat, tiles_str)
             if self._is_mortal:
