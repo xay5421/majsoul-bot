@@ -1,0 +1,7 @@
+[control]
+version = 4
+state_file = 'mortal.pth'
+
+[resnet]
+conv_channels = 32
+num_blocks = 2
