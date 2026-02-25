@@ -58,6 +58,7 @@ class MajsoulBot:
         self._live_handler = None  # 当前局的 live log handler
         # 装弱：第一名时前 N 步用 q_values 带权随机
         self._nerf_turns = getattr(self.config.ai, 'nerf_turns', 0)
+        self._nerf_active = False  # 本次出牌是否为装弱采样
         self._current_game_log = None  # 当前局日志路径
 
     def _live(self, msg: str) -> None:
@@ -908,12 +909,16 @@ class MajsoulBot:
                 intended = self.ai._intended_tile
                 actual_mjai = ms_to_mjai(tile)
                 if intended != actual_mjai:
-                    logger.warning(
-                        f"⚠️ 出牌不一致! Mortal想打={intended} 服务端实际={actual_mjai}({tile}) "
-                        f"→ 需要重同步 Mortal 状态"
-                    )
-                    # 修正 _mjai_log：替换最后的 tsumo 响应（Mortal 的决策）
-                    # 用服务端实际的 dahai 重建事件序列
+                    if self._nerf_active:
+                        # 装弱采样导致的不一致，静默重同步
+                        logger.debug(
+                            f"🤡 装弱重同步: Mortal想打={intended} 实际={actual_mjai}"
+                        )
+                    else:
+                        logger.warning(
+                            f"⚠️ 出牌不一致! Mortal想打={intended} 服务端实际={actual_mjai}({tile}) "
+                            f"→ 需要重同步 Mortal 状态"
+                        )
                     corrected = self.ai.build_corrected_events(tile, is_draw, is_riichi)
                     if corrected is not None:
                         self.ai.resync_state(corrected)
@@ -924,6 +929,7 @@ class MajsoulBot:
                 else:
                     self.ai._intended_tile = None
                     self.ai.send_dahai(seat, tile, is_draw)
+                self._nerf_active = False
             else:
                 self.ai.send_dahai(seat, tile, is_draw)
             
@@ -1361,6 +1367,8 @@ class MajsoulBot:
             sampled = self._nerf_sample_tile(reaction)
             if sampled:
                 tile = sampled
+            # 标记这次出牌是装弱采样的，不一致检测时不打 WARNING
+            self._nerf_active = True
             logger.info(f"🤡 装弱中 (rank=1, 第{gs.my_discard_count+1}/{self._nerf_turns}手)")
         else:
             tile = self.ai.decide_discard(gs)
