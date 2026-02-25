@@ -70,10 +70,9 @@ class MortalAI(BaseAI):
     @staticmethod
     def _find_mortal_dir() -> str:
         """自动查找 Mortal 目录"""
-        # 优先查项目内的 mortal/ 子目录
         project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         candidates = [
-            os.path.join(project_dir, "mortal"),
+            os.path.join(project_dir, "Mortal", "mortal"),  # 项目内
             os.path.expanduser("~/workspace/Mortal/mortal"),
             os.path.expanduser("~/Mortal/mortal"),
         ]

@@ -4,27 +4,27 @@ __pycache__/
 config.yaml
 *.log
 game_live.log
-match_log_*.txt
 
-# Mortal 训练产物
-mortal/*.pth
-mortal/target/
-mortal/runs/
-mortal/test_play_logs/
-mortal/1v3_logs/
-mortal/file_index.pth
-mortal/grp_file_index.pth
-mortal/buffer/
-mortal/drain/
+# Mortal 非必要目录
+Mortal/target/
+Mortal/docs/
+Mortal/log-viewer/
+Mortal/.github/
+Mortal/mortal/*.pth
+Mortal/mortal/libriichi.so
+Mortal/mortal/libriichi.pyd
+Mortal/mortal/runs/
+Mortal/mortal/test_play_logs/
+Mortal/mortal/1v3_logs/
+Mortal/mortal/file_index.pth
+Mortal/mortal/grp_file_index.pth
+Mortal/mortal/buffer/
+Mortal/mortal/drain/
 
-# Mortal 数据集
-mortal/data/raw/
-mortal/data/mjlog/
-mortal/data/mjai/
-
-# Mortal 二进制
-mortal/libriichi.so
-mortal/libriichi.pyd
+# Mortal 数据集（太大）
+Mortal/mortal/data/raw/
+Mortal/mortal/data/mjlog/
+Mortal/mortal/data/mjai/
 
 # 杂项
 mortal_crash.log
