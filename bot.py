@@ -1199,7 +1199,7 @@ class MajsoulBot:
         if self._should_nerf():
             action = self._get_nerf_ai().decide_action(gs, operation)
             if action:
-                logger.info(f"🤡 装弱决策 (rank=1, turn={gs.turn}/{self._nerf_turns})")
+                logger.info(f"🤡 装弱决策 (rank=1, 第{gs.my_discard_count+1}/{self._nerf_turns}手)")
         else:
             action = self.ai.decide_action(gs, operation)
 
@@ -1255,13 +1255,13 @@ class MajsoulBot:
             await self.client.skip_action()
 
     def _should_nerf(self) -> bool:
-        """判断当前是否应该装弱（第一名且在前 N 巡）"""
+        """判断当前是否应该装弱（第一名且自己出牌次数在前 N 步内）"""
         if self._nerf_turns <= 0:
             return False
         gs = self.game_state
         if not gs:
             return False
-        return gs.my_rank == 1 and gs.turn < self._nerf_turns
+        return gs.my_rank == 1 and gs.my_discard_count < self._nerf_turns
 
     def _get_nerf_ai(self) -> 'BaseAI':
         """获取装弱用的 ShantenAI（懒加载）"""
@@ -1284,7 +1284,7 @@ class MajsoulBot:
         # 装弱判断
         if self._should_nerf():
             tile = self._get_nerf_ai().decide_discard(gs)
-            logger.info(f"🤡 装弱中 (rank=1, turn={gs.turn}/{self._nerf_turns})")
+            logger.info(f"🤡 装弱中 (rank=1, 第{gs.my_discard_count+1}/{self._nerf_turns}手)")
         else:
             tile = self.ai.decide_discard(gs)
         is_moqie = (tile == gs.draw)

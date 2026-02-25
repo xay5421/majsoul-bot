@@ -59,6 +59,7 @@ class GameState:
         self.tiles_left: int = 70            # 牌山剩余
         self.dora_indicators: list[str] = [] # 宝牌指示牌
         self.turn: int = 0                   # 当前巡目
+        self.my_discard_count: int = 0       # 自己本局出牌次数
 
         # 所有可见的牌（用于计算剩余牌数）
         self._visible_tiles: list[str] = []
@@ -97,6 +98,7 @@ class GameState:
         self.honba = data.get("ben", 0)
         self.riichi_sticks = data.get("liqibang", 0)
         self.turn = 0
+        self.my_discard_count = 0
         self.tiles_left = 70 if self.player_count == 4 else 55
         self._visible_tiles = []
         self.pending_operation = None
@@ -164,6 +166,7 @@ class GameState:
             self.players[seat].riichi_turn = self.turn
 
         if seat == self.seat:
+            self.my_discard_count += 1
             # 自己出牌：从手牌中移除
             if self.draw == tile:
                 self.draw = None
