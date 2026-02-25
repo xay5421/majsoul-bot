@@ -951,9 +951,8 @@ class MajsoulBot:
         # 自家副露后需要出牌，重置确认标记
         if seat == gs.seat:
             self._discard_confirmed = False
-            # 清除 Mortal 决策缓存，防止副露后出牌时使用旧决策
-            if self._is_mortal and hasattr(self.ai, 'clear_last_reaction'):
-                self.ai.clear_last_reaction()
+            # 注意：吃/碰后 Mortal 的 _last_reaction 已经是 dahai（要打的牌）
+            # 不能 clear，否则 decide_discard 找不到决策会 fallback
 
         # 吃碰后可能有操作（如需要出牌）
         if msg.operation and msg.operation.operation_list:
