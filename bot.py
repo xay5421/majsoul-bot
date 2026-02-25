@@ -56,6 +56,9 @@ class MajsoulBot:
         self._is_mortal = (ai_type == "mortal")
         self._discard_confirmed = False  # 服务端已确认出牌（防止竞争）
         self._live_handler = None  # 当前局的 live log handler
+        # 装弱：第一名时前 N 步用 ShantenAI
+        self._nerf_turns = getattr(self.config.ai, 'nerf_turns', 0)
+        self._nerf_ai: BaseAI | None = None
         self._current_game_log = None  # 当前局日志路径
 
     def _live(self, msg: str) -> None:
@@ -1192,7 +1195,13 @@ class MajsoulBot:
         operation = gs.pending_operation
         gs.pending_operation = None
 
-        action = self.ai.decide_action(gs, operation)
+        # 装弱时用 ShantenAI 决策（但不阻止和牌——太假了）
+        if self._should_nerf():
+            action = self._get_nerf_ai().decide_action(gs, operation)
+            if action:
+                logger.info(f"🤡 装弱决策 (rank=1, turn={gs.turn}/{self._nerf_turns})")
+        else:
+            action = self.ai.decide_action(gs, operation)
 
         if action is None:
             # 跳过 — 不加 delay，直接发送，给后续出牌留时间
@@ -1245,6 +1254,22 @@ class MajsoulBot:
             await asyncio.sleep(self.human.get_skip_delay())
             await self.client.skip_action()
 
+    def _should_nerf(self) -> bool:
+        """判断当前是否应该装弱（第一名且在前 N 巡）"""
+        if self._nerf_turns <= 0:
+            return False
+        gs = self.game_state
+        if not gs:
+            return False
+        return gs.my_rank == 1 and gs.turn < self._nerf_turns
+
+    def _get_nerf_ai(self) -> 'BaseAI':
+        """获取装弱用的 ShantenAI（懒加载）"""
+        if self._nerf_ai is None:
+            from ai.shanten import ShantenAI
+            self._nerf_ai = ShantenAI()
+        return self._nerf_ai
+
     async def _do_discard(self) -> None:
         """执行出牌"""
         gs = self.game_state
@@ -1256,7 +1281,12 @@ class MajsoulBot:
             logger.info("服务端已确认出牌，跳过本次出牌")
             return
 
-        tile = self.ai.decide_discard(gs)
+        # 装弱判断
+        if self._should_nerf():
+            tile = self._get_nerf_ai().decide_discard(gs)
+            logger.info(f"🤡 装弱中 (rank=1, turn={gs.turn}/{self._nerf_turns})")
+        else:
+            tile = self.ai.decide_discard(gs)
         is_moqie = (tile == gs.draw)
 
         # 验证出牌合法性

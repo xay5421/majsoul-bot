@@ -21,6 +21,8 @@ ai:
   # command: ["python", "path/to/mortal/bot.py"]
   # mjai_http 模式: AI 服务器地址
   # url: "http://127.0.0.1:7331"
+  # 装弱：第一名时每局前 N 巡用 ShantenAI 打 (0=关闭)
+  # nerf_turns: 10
 
 # 运行设置
 run:

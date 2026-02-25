@@ -72,6 +72,16 @@ class GameState:
         return (self.seat - self.dealer) % self.player_count
 
     @property
+    def my_rank(self) -> int:
+        """当前自己的顺位 (1=一位, 2=二位, ...)"""
+        my_score = self.players[self.seat].score
+        rank = 1
+        for i, p in enumerate(self.players):
+            if i != self.seat and p.score > my_score:
+                rank += 1
+        return rank
+
+    @property
     def all_discards(self) -> list[str]:
         """所有玩家的弃牌"""
         result = []

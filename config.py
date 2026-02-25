@@ -23,6 +23,7 @@ class AIConfig:
     command: str = ""         # mjai_subprocess: AI 程序命令
     url: str = ""             # mjai_http: AI 服务器地址
     mortal_dir: str = ""      # mortal: Mortal 目录路径
+    nerf_turns: int = 0       # 装弱：第一名时前 N 步用 ShantenAI（0=关闭）
 
 
 @dataclass
