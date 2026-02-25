@@ -838,9 +838,12 @@ class MajsoulBot:
         if msg.operation and msg.operation.operation_list:
             op = MessageToDict(msg.operation, preserving_proto_field_name=True)
             gs.pending_operation = op
+            # 新一局开始时等一下再操作，防止服务端还没准备好接收
+            await asyncio.sleep(2.0)
             await self._process_pending_operation()
         elif len(d['tiles']) == 14:
-            # 庄家需要出牌
+            # 庄家需要出牌 — 等一下再发，防止服务端丢弃请求
+            await asyncio.sleep(2.0)
             await self._do_discard()
 
     async def _handle_deal_tile(self, data: bytes) -> None:
