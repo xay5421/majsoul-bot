@@ -1208,9 +1208,9 @@ class MajsoulBot:
             has_discard = any(op.get("type") == 1 for op in op_list)
 
             if has_discard:
-                # 有出牌选项 — 直接出牌即可，出牌本身就代表放弃暗杠/自摸
-                # 不要先发 skip_action！服务端会把 cancel 理解为放弃整个 operation（包括出牌）
-                display.show_action_decision("skip")
+                # 有出牌选项时直接出牌，不发 cancel_operation
+                # 出牌(type=1)本身就隐含了放弃暗杠/自摸等其他选项
+                # 发 cancel 会导致服务端立即摸切，没有出牌机会
                 await self._do_discard()
             else:
                 # 纯跳过别人的牌（不吃碰杠荣）
