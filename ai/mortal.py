@@ -73,8 +73,6 @@ class MortalAI(BaseAI):
         project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         candidates = [
             os.path.join(project_dir, "Mortal", "mortal"),  # 项目内
-            os.path.expanduser("~/workspace/Mortal/mortal"),
-            os.path.expanduser("~/Mortal/mortal"),
         ]
         for d in candidates:
             if os.path.isfile(os.path.join(d, "mortal.py")):

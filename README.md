@@ -129,7 +129,7 @@ Ctrl+C 或 `kill` 可优雅退出。
 
 > **注意**：Mortal 需要独立 venv（含 PyTorch + libriichi），bot 通过 subprocess 调用，两边环境互不影响。  
 > libriichi 支持 Python 3.10-3.12。  
-> `mortal_dir` 自动查找顺序：`~/workspace/Mortal/mortal` → `~/Mortal/mortal`
+> `mortal_dir` 自动查找：项目内 `Mortal/mortal/` 目录，或在 `config.yaml` 中手动指定 `ai.mortal_dir`
 
 ### mjai_subprocess — mjai 子进程
 

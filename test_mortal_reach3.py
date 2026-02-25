@@ -1,8 +1,9 @@
 """测试: reach → dahai(不同牌) → reach_accepted 是否可行"""
 import subprocess
+import os
 import json
 
-MORTAL_DIR = "/home/ubuntu/workspace/Mortal/mortal"
+MORTAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Mortal", "mortal")
 PYTHON = "/home/ubuntu/workspace/majsoul-bot/.venv/bin/python"
 
 def start_mortal(seat=0):

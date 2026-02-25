@@ -1,9 +1,10 @@
 """测试 Mortal 重放是否正确同步状态"""
 import subprocess
+import os
 import json
 import sys
 
-MORTAL_DIR = "/home/ubuntu/workspace/Mortal/mortal"
+MORTAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Mortal", "mortal")
 PYTHON = "/home/ubuntu/workspace/majsoul-bot/.venv/bin/python"
 
 def start_mortal(seat=0):
