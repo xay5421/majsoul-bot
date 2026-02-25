@@ -951,6 +951,9 @@ class MajsoulBot:
         # 自家副露后需要出牌，重置确认标记
         if seat == gs.seat:
             self._discard_confirmed = False
+            # 清除 Mortal 决策缓存，防止副露后出牌时使用旧决策
+            if self._is_mortal and hasattr(self.ai, 'clear_last_reaction'):
+                self.ai.clear_last_reaction()
 
         # 吃碰后可能有操作（如需要出牌）
         if msg.operation and msg.operation.operation_list:
@@ -1019,6 +1022,10 @@ class MajsoulBot:
         kan_name = names.get(actual_type, f'杠{type_}')
         logger.info(f"{who} {kan_name}: {tiles_str} (raw type={type_})")
         self._live(f"[巡{gs.turn:2d}] {who} {kan_name}: {tile_to_str(tiles_str)}")
+
+        # 自家杠操作后清除 Mortal 决策缓存，防止岭上摸牌时重复使用旧决策
+        if seat == gs.seat and self._is_mortal and hasattr(self.ai, 'clear_last_reaction'):
+            self.ai.clear_last_reaction()
 
         # 可能有抢杠和
         if msg.operation and msg.operation.operation_list:
