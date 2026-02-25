@@ -1,9 +1,11 @@
 """雀魂自动打牌机器人 — 主入口"""
 import asyncio
 import logging
+import os
 import random
 import signal
 import sys
+from datetime import datetime
 
 import ms.protocol_pb2 as pb
 from google.protobuf.json_format import MessageToDict
@@ -53,32 +55,69 @@ class MajsoulBot:
         self._game_end_event = asyncio.Event()
         self._is_mortal = (ai_type == "mortal")
         self._discard_confirmed = False  # 服务端已确认出牌（防止竞争）
+        self._live_handler = None  # 当前局的 live log handler
+        self._current_game_log = None  # 当前局日志路径
 
     def _live(self, msg: str) -> None:
         """写入对局实况日志 (game_live.log)"""
         if hasattr(self, '_live_log'):
             self._live_log.info(msg)
 
+    def _start_game_live_log(self) -> None:
+        """为当前对局创建新的实况日志文件"""
+        # 关闭上一局的 handler
+        self._stop_game_live_log()
+
+        game_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        game_num = self.games_played + 1
+        log_path = f"logs/game_{game_time}_#{game_num}.log"
+        self._live_handler = logging.FileHandler(log_path, encoding="utf-8")
+        self._live_handler.setFormatter(logging.Formatter(
+            "%(asctime)s │ %(message)s", datefmt="%H:%M:%S",
+        ))
+        self._live_log.addHandler(self._live_handler)
+        self._current_game_log = log_path
+        logger.info(f"对局日志: {log_path}")
+
+    def _stop_game_live_log(self) -> None:
+        """关闭当前对局的实况日志文件"""
+        if self._live_handler:
+            self._live_handler.close()
+            self._live_log.removeHandler(self._live_handler)
+            self._live_handler = None
+
     async def run(self) -> None:
         """主运行循环"""
         log_level = getattr(logging, self.config.run.log_level, logging.INFO)
+
+        # 确保 logs 目录存在
+        os.makedirs("logs", exist_ok=True)
+
+        # 终端输出
         logging.basicConfig(
             level=log_level,
             format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
             datefmt="%H:%M:%S",
         )
 
-        # 对局实况日志 — 写到文件，方便 tail -f 查看
+        # 全局文件日志 — 整个运行周期写一个文件，记录所有 logger 输出
+        start_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bot_log_path = f"logs/bot_{start_time}.log"
+        bot_file_handler = logging.FileHandler(bot_log_path, encoding="utf-8")
+        bot_file_handler.setLevel(log_level)
+        bot_file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+        logging.getLogger().addHandler(bot_file_handler)
+
+        # 对局实况日志 — 每局单独文件，在 _on_game_start 里创建
         self._live_log = logging.getLogger("majsoul.live")
         self._live_log.setLevel(logging.INFO)
         self._live_log.propagate = False  # 不传播到 root logger
-        live_handler = logging.FileHandler("game_live.log", mode="w", encoding="utf-8")
-        live_handler.setFormatter(logging.Formatter(
-            "%(asctime)s │ %(message)s", datefmt="%H:%M:%S"
-        ))
-        self._live_log.addHandler(live_handler)
+        self._live_handler = None  # 当前局的 file handler
 
-        logger.info("🀄 雀魂机器人启动")
+        logger.info(f"🀄 雀魂机器人启动 (日志: {bot_log_path})")
 
         try:
             await self.client.connect()
@@ -222,6 +261,10 @@ class MajsoulBot:
         self._in_game = True
         self.human.on_game_start()
         self.ai.on_game_start(self.game_state)
+
+        # 创建本局的实况日志文件
+        self._start_game_live_log()
+
         logger.info(f"对局开始! 座位={seat}")
 
     async def _on_game_restore(self, game_restore) -> None:
@@ -1059,6 +1102,7 @@ class MajsoulBot:
             logger.info("🏁 对局结束!")
 
         self.ai.on_game_end({})
+        self._stop_game_live_log()
         self._game_end_event.set()
 
     # ─── 决策 ──────────────────────────────────────
