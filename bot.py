@@ -405,10 +405,10 @@ class MajsoulBot:
                 elif action_name == "ActionAnGangAddGang":
                     msg = pb.ActionAnGangAddGang()
                     msg.ParseFromString(action_data)
-                    if msg.type == 2:
+                    if msg.type == 3:  # 暗杠
                         tiles = [msg.tiles] if isinstance(msg.tiles, str) else list(msg.tiles)
                         self.game_state.on_ankan(msg.seat, tiles)
-                    elif msg.type == 3:
+                    elif msg.type == 2:  # 加杠
                         self.game_state.on_kakan(msg.seat, msg.tiles)
             except Exception as e:
                 logger.warning(f"重放 {action_name} 出错: {e}", exc_info=True)
@@ -694,7 +694,7 @@ class MajsoulBot:
                     tiles = list(msg.tiles) if msg.tiles else [msg.tile] * 4
                     tile = msg.tile or (tiles[0] if tiles else "?")
                     
-                    if msg.type == 2:  # 暗杠
+                    if msg.type == 3:  # 暗杠
                         # 处理赤牌：赤牌每种只有1张
                         from tiles import normalize_aka
                         if tile.startswith("0"):
@@ -710,7 +710,7 @@ class MajsoulBot:
                             "actor": msg.seat,
                             "consumed": consumed,
                         }
-                    elif msg.type == 3:  # 加杠
+                    elif msg.type == 2:  # 加杠
                         consumed = [ms_to_mjai(tile)] * 3  # 碰时的3张牌
                         event = {
                             "type": "kakan",
@@ -970,13 +970,12 @@ class MajsoulBot:
         msg.ParseFromString(data)
 
         seat = msg.seat
-        type_ = msg.type  # 2=暗杠, 3=加杠
+        type_ = msg.type  # 3=暗杠, 2=加杠
         tiles_str = msg.tiles
 
         gs = self.game_state
 
-        # 直接信任服务端的 type：2=暗杠, 3=加杠
-        if type_ == 2:
+        if type_ == 3:  # 暗杠
             gs.on_ankan(seat, [tiles_str] if isinstance(tiles_str, str) else list(tiles_str))
             if self._is_mortal:
                 # 暗杠 consumed 需要正确处理赤牌：
@@ -994,7 +993,7 @@ class MajsoulBot:
                 else:
                     consumed = [tiles_str] * 4
                 self.ai.send_ankan(seat, consumed)
-        elif type_ == 3:
+        elif type_ == 2:  # 加杠
             # 加杠：从碰的 meld 中获取 consumed
             # mjai 协议要求 kakan 的 consumed 是碰时的 3 张牌
             pon_consumed = [tiles_str, tiles_str, tiles_str]  # 默认同名牌x3
@@ -1007,7 +1006,7 @@ class MajsoulBot:
                 self.ai.send_kakan(seat, tiles_str, pon_consumed)
 
         who = '我' if seat == gs.seat else f'玩家{seat}'
-        names = {2: '暗杠', 3: '加杠'}
+        names = {3: '暗杠', 2: '加杠'}
         kan_name = names.get(type_, f'杠{type_}')
         logger.info(f"{who} {kan_name}: {tiles_str} (raw type={type_})")
         self._live(f"[巡{gs.turn:2d}] {who} {kan_name}: {tile_to_str(tiles_str)}")
