@@ -695,7 +695,16 @@ class MajsoulBot:
                     tile = msg.tile or (tiles[0] if tiles else "?")
                     
                     if msg.type == 2:  # 暗杠
-                        consumed = [ms_to_mjai(tile)] * 4
+                        # 处理赤牌：赤牌每种只有1张
+                        from tiles import normalize_aka
+                        if tile.startswith("0"):
+                            normal = normalize_aka(tile)
+                            consumed = [ms_to_mjai(normal)] * 3 + [ms_to_mjai(tile)]
+                        elif tile in ("5m", "5p", "5s"):
+                            aka = "0" + tile[1]
+                            consumed = [ms_to_mjai(tile)] * 3 + [ms_to_mjai(aka)]
+                        else:
+                            consumed = [ms_to_mjai(tile)] * 4
                         event = {
                             "type": "ankan",
                             "actor": msg.seat,
@@ -849,8 +858,11 @@ class MajsoulBot:
             gs.pending_operation = op
             await self._process_pending_operation()
         else:
-            # 普通摸牌，出牌
-            await self._do_discard()
+            # 立直后不需要主动出牌（server 会自动摸切）
+            if gs.players[gs.seat].riichi:
+                logger.debug("立直中，等待服务端自动摸切")
+            else:
+                await self._do_discard()
 
     async def _handle_discard_tile(self, data: bytes) -> None:
         """出牌 — 使用 ActionDiscardTile"""
@@ -975,7 +987,20 @@ class MajsoulBot:
         if actual_type == 2:
             gs.on_ankan(seat, [tiles_str] if isinstance(tiles_str, str) else list(tiles_str))
             if self._is_mortal:
-                consumed = [tiles_str] * 4 if isinstance(tiles_str, str) else list(tiles_str)
+                # 暗杠 consumed 需要正确处理赤牌：
+                # 赤牌 (0m/0p/0s) 每种只有1张，暗杠时应该是 3张普通 + 1张赤
+                from tiles import normalize_aka
+                if tiles_str.startswith("0"):
+                    # 赤牌暗杠: 1张赤 + 3张普通 (如 0m → ["5m","5m","5m","0m"])
+                    normal = normalize_aka(tiles_str)  # "0m" → "5m"
+                    consumed = [normal, normal, normal, tiles_str]
+                elif tiles_str in ("5m", "5p", "5s"):
+                    # 普通五暗杠: 可能含赤牌，但服务端传的 tile 是普通五
+                    # 保守处理：3张普通 + 1张赤（四人麻将一定有赤牌）
+                    aka = "0" + tiles_str[1]  # "5m" → "0m"
+                    consumed = [tiles_str, tiles_str, tiles_str, aka]
+                else:
+                    consumed = [tiles_str] * 4
                 self.ai.send_ankan(seat, consumed)
         elif actual_type == 3:
             # 加杠：从碰的 meld 中获取 consumed
