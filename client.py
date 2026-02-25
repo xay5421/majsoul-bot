@@ -38,6 +38,7 @@ class MajsoulClient:
         self._last_game_uuid: str = ""
         self._game_disconnected = asyncio.Event()  # game server 断线信号
         self._in_game: bool = False  # 是否在对局中
+        self._connect_lock = asyncio.Lock()  # 防止并发连接 game server
 
     # ─── 连接 ─────────────────────────────────────
 
@@ -204,30 +205,58 @@ class MajsoulClient:
         logger.info("登录初始化完成")
 
     async def check_and_reconnect_game(self) -> bool:
-        """检查并重连残留对局
+        """检查并重连残留对局（带重试）
 
         Returns:
             True 如果成功重连了一局
         """
+        connect_token = None
+        game_uuid = None
+
         # 先看登录时是否带了 game_info
         if self._pending_reconnect:
             info = self._pending_reconnect
             self._pending_reconnect = None
+            connect_token = info["connect_token"]
+            game_uuid = info["game_uuid"]
             logger.info("尝试重连登录时的残留对局...")
-            return await self._reconnect_game(
-                info["connect_token"], info["game_uuid"]
-            )
+        else:
+            # 主动查询
+            gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
+            gd = MessageToDict(gi, preserving_proto_field_name=True)
+            game_info = gd.get("game_info", {})
+            if game_info.get("connect_token"):
+                connect_token = game_info["connect_token"]
+                game_uuid = game_info["game_uuid"]
+                logger.info(f"🔄 发现残留对局: {game_uuid[:30]}...")
 
-        # 再主动查询
-        gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
-        gd = MessageToDict(gi, preserving_proto_field_name=True)
-        game_info = gd.get("game_info", {})
-        if game_info.get("connect_token"):
-            logger.info(f"🔄 发现残留对局: {game_info.get('game_uuid', '?')[:30]}...")
-            return await self._reconnect_game(
-                game_info["connect_token"], game_info["game_uuid"]
-            )
+        if not connect_token:
+            return False
 
+        # 最多重试 3 次
+        for attempt in range(1, 4):
+            logger.info(f"重连残留对局 (尝试 {attempt}/3)...")
+            success = await self._reconnect_game(connect_token, game_uuid)
+            if success:
+                return True
+            if attempt < 3:
+                logger.info("等待 5s 后重试...")
+                await asyncio.sleep(5)
+                # 重新查询，token 可能变了
+                try:
+                    gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
+                    gd = MessageToDict(gi, preserving_proto_field_name=True)
+                    game_info = gd.get("game_info", {})
+                    if game_info.get("connect_token"):
+                        connect_token = game_info["connect_token"]
+                        game_uuid = game_info["game_uuid"]
+                    else:
+                        logger.info("残留对局已消失，可能已结束")
+                        return False
+                except Exception as e:
+                    logger.warning(f"查询残留对局失败: {e}")
+
+        logger.error("重连残留对局失败，已尝试 3 次")
         return False
 
     async def _reconnect_game(self, connect_token: str,
@@ -240,8 +269,9 @@ class MajsoulClient:
             )
             return True
         except Exception as e:
-            # 即使状态恢复有问题，如果 game channel 已连接，仍然返回 True
-            if self._game_channel and self.fast_test:
+            # 只有在 game channel 实际连通的情况下才视为"部分成功"
+            if (self._game_channel and self._game_channel.is_connected
+                    and self.fast_test):
                 logger.warning(f"重连状态恢复不完整 (可继续): {e}")
                 return True
             logger.error(f"重连对局失败: {e}")
@@ -536,6 +566,10 @@ class MajsoulClient:
 
     async def _on_match_game_start(self, data: bytes) -> None:
         """匹配成功 — 连接对局服务器"""
+        # 如果已经有活跃的 game channel（重连已在进行中），跳过
+        if self._connect_lock.locked():
+            logger.info("game server 连接正在进行中，跳过重复的匹配通知")
+            return
         msg = pb.NotifyMatchGameStart()
         msg.ParseFromString(data)
         await self._connect_game_server(
@@ -558,7 +592,14 @@ class MajsoulClient:
         实际通过当前 lobby 的 route 域名 + /game-gateway 路径连接。
         
         支持断线重连：enterGame 会返回 GameRestore 数据。
+        使用 _connect_lock 防止并发调用（匹配回调 + 重连可能同时触发）。
         """
+        async with self._connect_lock:
+            await self._connect_game_server_inner(game_url, connect_token, game_uuid)
+
+    async def _connect_game_server_inner(self, game_url: str, connect_token: str,
+                                          game_uuid: str) -> None:
+        """_connect_game_server 的实际实现（在锁内调用）"""
         # 保存连接信息用于重连
         self._last_connect_token = connect_token
         self._last_game_uuid = game_uuid
