@@ -56,9 +56,8 @@ class MajsoulBot:
         self._is_mortal = (ai_type == "mortal")
         self._discard_confirmed = False  # 服务端已确认出牌（防止竞争）
         self._live_handler = None  # 当前局的 live log handler
-        # 装弱：第一名时前 N 步用 ShantenAI
+        # 装弱：第一名时前 N 步用 q_values 带权随机
         self._nerf_turns = getattr(self.config.ai, 'nerf_turns', 0)
-        self._nerf_ai: BaseAI | None = None
         self._current_game_log = None  # 当前局日志路径
 
     def _live(self, msg: str) -> None:
@@ -1195,13 +1194,7 @@ class MajsoulBot:
         operation = gs.pending_operation
         gs.pending_operation = None
 
-        # 装弱时用 ShantenAI 决策（但不阻止和牌——太假了）
-        if self._should_nerf():
-            action = self._get_nerf_ai().decide_action(gs, operation)
-            if action:
-                logger.info(f"🤡 装弱决策 (rank=1, 第{gs.my_discard_count+1}/{self._nerf_turns}手)")
-        else:
-            action = self.ai.decide_action(gs, operation)
+        action = self.ai.decide_action(gs, operation)
 
         if action is None:
             # 跳过 — 不加 delay，直接发送，给后续出牌留时间
@@ -1263,12 +1256,89 @@ class MajsoulBot:
             return False
         return gs.my_rank == 1 and gs.my_discard_count < self._nerf_turns
 
-    def _get_nerf_ai(self) -> 'BaseAI':
-        """获取装弱用的 ShantenAI（懒加载）"""
-        if self._nerf_ai is None:
-            from ai.shanten import ShantenAI
-            self._nerf_ai = ShantenAI()
-        return self._nerf_ai
+    def _nerf_sample_tile(self, reaction: dict, temperature: float = 2.0) -> str | None:
+        """从 Mortal 的 q_values 做 softmax 采样选择次优牌（装弱用）。
+        
+        temperature 越高越随机：
+          1.0 = 正常 softmax（略随机）
+          2.0 = 较随机（默认，偶尔打次优）
+          5.0+ = 接近均匀随机
+        """
+        import math
+        import random as _rng
+        from ai.mortal import mjai_to_ms
+        
+        meta = reaction.get("meta", {})
+        q_values = meta.get("q_values")
+        mask_bits = meta.get("mask_bits")
+        
+        if not q_values or mask_bits is None:
+            return None
+        
+        # 解码 mask_bits → 合法动作 index
+        indices = []
+        for i in range(46):
+            if mask_bits & (1 << i):
+                indices.append(i)
+        
+        if len(indices) != len(q_values):
+            return None
+        
+        # 只取出牌动作 (index 0-36)，不随机化立直/吃碰杠等
+        discard_indices = []
+        discard_qs = []
+        for i, idx in enumerate(indices):
+            if idx < 37:  # 出牌动作
+                discard_indices.append(i)
+                discard_qs.append(q_values[i])
+        
+        if len(discard_qs) < 2:
+            return None  # 只有一张可出，没法随机
+        
+        # softmax with temperature
+        max_q = max(discard_qs)
+        exps = [math.exp((q - max_q) / temperature) for q in discard_qs]
+        total = sum(exps)
+        probs = [e / total for e in exps]
+        
+        # 带权随机采样
+        r = _rng.random()
+        cumsum = 0.0
+        chosen_local = 0
+        for j, p in enumerate(probs):
+            cumsum += p
+            if r <= cumsum:
+                chosen_local = j
+                break
+        
+        chosen_action_idx = indices[discard_indices[chosen_local]]
+        
+        # action index → mjai tile
+        _IDX_TO_MJAI = [
+            '1m','2m','3m','4m','5m','6m','7m','8m','9m',
+            '1p','2p','3p','4p','5p','6p','7p','8p','9p',
+            '1s','2s','3s','4s','5s','6s','7s','8s','9s',
+            'E','S','W','N','P','F','C','0m','0p','0s',
+        ]
+        if chosen_action_idx >= len(_IDX_TO_MJAI):
+            return None
+        
+        mjai_tile = _IDX_TO_MJAI[chosen_action_idx]
+        ms_tile = mjai_to_ms(mjai_tile)
+        
+        # 打印采样结果
+        best_idx = discard_qs.index(max(discard_qs))
+        best_action = indices[discard_indices[best_idx]]
+        best_tile = _IDX_TO_MJAI[best_action] if best_action < len(_IDX_TO_MJAI) else '?'
+        chosen_q = discard_qs[chosen_local]
+        best_q = discard_qs[best_idx]
+        if chosen_local != best_idx:
+            logger.info(
+                f"🤡 装弱采样: {ms_tile}(q={chosen_q:.2f}) 替代最优 "
+                f"{mjai_to_ms(best_tile)}(q={best_q:.2f}) [T={temperature}]"
+            )
+        
+        return ms_tile
 
     async def _do_discard(self) -> None:
         """执行出牌"""
@@ -1281,9 +1351,15 @@ class MajsoulBot:
             logger.info("服务端已确认出牌，跳过本次出牌")
             return
 
-        # 装弱判断
-        if self._should_nerf():
-            tile = self._get_nerf_ai().decide_discard(gs)
+        # 装弱判断：用 Mortal 的 q_values 做带权随机采样
+        if self._should_nerf() and self._is_mortal:
+            # 先让 Mortal 正常决策（更新内部状态）
+            tile = self.ai.decide_discard(gs)
+            # 然后从 q_values 采样一个次优牌
+            reaction = getattr(self.ai, '_last_reaction', None) or {}
+            sampled = self._nerf_sample_tile(reaction)
+            if sampled:
+                tile = sampled
             logger.info(f"🤡 装弱中 (rank=1, 第{gs.my_discard_count+1}/{self._nerf_turns}手)")
         else:
             tile = self.ai.decide_discard(gs)
