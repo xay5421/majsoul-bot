@@ -1,6 +1,7 @@
 """实时状态显示 — 对局中输出可读的局面信息"""
 import logging
 from tiles import tile_to_str, tiles_to_str, sort_tiles, WIND_NAMES
+from ai.shanten import calc_shanten
 
 logger = logging.getLogger("majsoul.display")
 
@@ -88,14 +89,33 @@ def show_round_start(gs) -> None:
     print(f"  自风: {BOLD}{my_wind}{RESET}")
     print(f"  宝牌指示: {format_tiles(gs.dora_indicators)}")
     print()
-    print(f"  手牌: {format_hand(gs.hand, gs.draw)}")
+    print(f"  手牌: {format_hand(gs.hand, gs.draw)}  │ {_fmt_shanten(gs.hand)}")
     print(f"{'─' * 60}")
+
+
+def _fmt_shanten(tiles: list[str]) -> str:
+    """格式化向听数显示"""
+    try:
+        s = calc_shanten(tiles)
+        if s == -1:
+            return f"{GREEN}和了{RESET}"
+        elif s == 0:
+            return f"{GREEN}听牌{RESET}"
+        elif s <= 2:
+            return f"{YELLOW}{s}向听{RESET}"
+        else:
+            return f"{DIM}{s}向听{RESET}"
+    except Exception:
+        return ""
 
 
 def show_draw(gs, tile: str) -> None:
     """摸牌"""
+    shanten_part = _fmt_shanten(gs.hand)
+    shanten_sep = f"  │ {shanten_part}" if shanten_part else ""
     print(f"  {DIM}[巡{gs.turn:2d}]{RESET} 摸 {format_tile(tile)}"
           f"  │ 手牌: {format_hand(gs.hand, tile)}"
+          f"{shanten_sep}"
           f"  │ 剩{gs.tiles_left}枚")
 
 
@@ -109,7 +129,10 @@ def show_discard(gs, seat: int, tile: str, is_tsumogiri: bool = False,
     line = f"  {DIM}[巡{gs.turn:2d}]{RESET} {who} 打 {format_tile(tile)}{moqie}{riichi}"
 
     if seat == gs.seat:
+        shanten_part = _fmt_shanten(gs.hand)
         line += f"  │ 手牌: {format_hand(gs.hand)}"
+        if shanten_part:
+            line += f"  │ {shanten_part}"
 
     print(line)
 

@@ -15,7 +15,7 @@ from codec import decode as xor_decode
 from config import load_config
 from game_state import GameState
 from ai.basic import BasicAI
-from ai.shanten import ShantenAI
+from ai.shanten import ShantenAI, calc_shanten
 from human_like import HumanBehavior
 import display
 from tiles import tile_to_str, tiles_to_str, sort_tiles
@@ -23,6 +23,20 @@ from tiles import tile_to_str, tiles_to_str, sort_tiles
 logger = logging.getLogger("majsoul")
 
 WIND = ['东', '南', '西', '北']
+
+
+def _shanten_str(tiles: list[str]) -> str:
+    """计算向听数并返回格式化字符串"""
+    try:
+        s = calc_shanten(tiles)
+        if s == -1:
+            return "和了"
+        elif s == 0:
+            return "听牌"
+        else:
+            return f"{s}向听"
+    except Exception:
+        return "?"
 
 
 def _create_ai(config):
@@ -856,10 +870,13 @@ class MajsoulBot:
         gs.tiles_left = left
         self._discard_confirmed = False  # 重置出牌确认标记
         display.show_draw(gs, tile)
+        # 摸牌后手牌 = gs.hand（已含摸的牌）
+        hand_with_draw = list(gs.hand)
+        shanten_info = _shanten_str(hand_with_draw)
         self._live(
             f"  摸 {tile_to_str(tile)} "
             f"| 手牌: {tiles_to_str(sort_tiles(gs.hand))} + {tile_to_str(tile)} "
-            f"| 剩{gs.tiles_left}枚"
+            f"| {shanten_info} | 剩{gs.tiles_left}枚"
         )
 
         # 新宝牌
@@ -942,10 +959,11 @@ class MajsoulBot:
         if seat == gs.seat:
             moqie = " (摸切)" if is_draw else ""
             riichi = " [立直]" if is_riichi else ""
+            shanten_info = _shanten_str(gs.hand)
             self._live(
                 f"[巡{gs.turn:2d}] 我打: {tile_to_str(tile)}{moqie}{riichi} "
                 f"| 手牌: {tiles_to_str(sort_tiles(gs.hand))} "
-                f"| 剩{gs.tiles_left}枚"
+                f"| {shanten_info} | 剩{gs.tiles_left}枚"
             )
             return  # 自己出的牌不需要响应
 
