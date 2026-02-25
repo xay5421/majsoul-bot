@@ -14,14 +14,9 @@ match:
 
 # AI 设置
 ai:
-  # AI 类型: basic (基础规则AI), mortal (Mortal本地推理),
-  #          mjai_subprocess (mjai子进程), mjai_http (mjai HTTP)
+  # AI 类型: basic (基础规则AI), shanten (向听数贪心), mortal (Mortal深度学习)
   type: "basic"
-  # mjai_subprocess 模式: AI 程序命令
-  # command: ["python", "path/to/mortal/bot.py"]
-  # mjai_http 模式: AI 服务器地址
-  # url: "http://127.0.0.1:7331"
-  # 装弱：第一名时每局前 N 巡用 ShantenAI 打 (0=关闭)
+  # 装弱：第一名时每局自己的前 N 手出牌用 q_values 随机采样 (0=关闭)
   # nerf_turns: 10
 
 # 运行设置
