@@ -446,9 +446,9 @@ class MajsoulBot:
         if replay_to_mortal:
             try:
                 self._replay_actions_to_mortal(actions)
-                # 清除重放过程中产生的旧决策缓存
-                if hasattr(self.ai, 'clear_last_reaction'):
-                    self.ai.clear_last_reaction()
+                # 不要 clear_last_reaction：如果重放最后一步是自家 tsumo，
+                # Mortal 已经返回了有效的 dahai 决策，clear 会导致 fallback 摸切。
+                # 中间步骤的旧决策在后续事件发送时已被覆盖，无需手动清除。
                 logger.info("✅ Mortal 状态同步完成，无需 fallback")
             except Exception as e:
                 logger.warning(f"Mortal 重放失败，fallback 到 ShantenAI: {e}")
