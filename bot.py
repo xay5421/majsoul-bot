@@ -503,6 +503,9 @@ class MajsoulBot:
         if not isinstance(ai, MortalAI):
             raise RuntimeError("AI 不是 MortalAI")
         
+        # 清空上一对局/上一局残留的事件日志，防止 build_corrected_events 混入旧事件
+        ai._mjai_log = []
+        
         seat = self.game_state.seat
         _BAKAZE = {0: "E", 1: "S", 2: "W", 3: "N"}
         

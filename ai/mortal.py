@@ -376,6 +376,10 @@ class MortalAI(BaseAI):
             except Exception:
                 self.process.kill()
         self.process = None
+        self._mjai_log = []  # 清空事件日志，防止残留到下一对局
+        self._last_reaction = None
+        self._reach_pending = False
+        self._intended_tile = None
         logger.info("Mortal AI 已关闭")
 
     def send_tsumo(self, actor: int, tile: str | None) -> dict | None:
