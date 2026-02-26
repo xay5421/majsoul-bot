@@ -163,11 +163,15 @@ class MajsoulBot:
             reconnected = await self.client.check_and_reconnect_game()
             if reconnected:
                 logger.info("已重连残留对局，等待对局结束...")
-                try:
-                    await asyncio.wait_for(self._game_end_event.wait(), timeout=3600)
-                except asyncio.TimeoutError:
-                    logger.warning("重连对局超时 (3600s)")
+                # 和主循环一样：同时监听 game_end 和断线信号
+                await self._wait_for_game_end_or_disconnect()
                 self.games_played += 1
+                # 对局结束后刷新段位信息
+                try:
+                    rank = await self.client.fetch_rank_info()
+                    logger.info(f"📊 当前段位: {rank} (已完成 {self.games_played} 局)")
+                except Exception as e:
+                    logger.warning(f"刷新段位失败: {e}")
                 if self._running and self.config.run.max_games != 1:
                     interval = self.config.run.game_interval
                     logger.info(f"等待 {interval} 秒后继续...")
@@ -256,43 +260,7 @@ class MajsoulBot:
 
                 # 等待对局结束（同时监控断线）
                 self._match1023_count = 0  # 成功进入对局，重置计数
-                logger.info("等待对局结束...")
-                while not self._game_end_event.is_set():
-                    # 同时等 game_end 和断线信号
-                    game_end_task = asyncio.create_task(self._game_end_event.wait())
-                    disconnect_task = asyncio.create_task(
-                        self.client._game_disconnected.wait()
-                    )
-                    
-                    done, pending = await asyncio.wait(
-                        [game_end_task, disconnect_task],
-                        timeout=3600,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    
-                    for t in pending:
-                        t.cancel()
-                    
-                    if not done:
-                        # 超时 — 对局可能还在进行，继续等待
-                        logger.warning("对局已运行超过 3600s，继续等待...")
-                        continue
-                    
-                    if disconnect_task in done and not self._game_end_event.is_set():
-                        # 断线了，尝试重连
-                        logger.warning("⚠️ 对局中途断线，尝试自动重连...")
-                        self._live("⚠️ 对局中途断线，尝试重连...")
-                        reconnected = await self.client.auto_reconnect_game()
-                        if not reconnected:
-                            logger.error("重连失败，本局作废")
-                            self._live("❌ 重连失败，本局作废")
-                            break
-                        # 重连成功，继续等待对局结束
-                        self._live("✅ 重连成功，继续对局")
-                        continue
-                    
-                    # game_end 触发，正常结束
-                    break
+                await self._wait_for_game_end_or_disconnect()
 
                 self.games_played += 1
 
@@ -326,6 +294,41 @@ class MajsoulBot:
             logger.info("🀄 机器人已停止")
 
     # ─── 事件处理 ──────────────────────────────────
+
+    async def _wait_for_game_end_or_disconnect(self) -> None:
+        """等待对局结束，同时监听断线并自动重连"""
+        logger.info("等待对局结束...")
+        while not self._game_end_event.is_set():
+            game_end_task = asyncio.create_task(self._game_end_event.wait())
+            disconnect_task = asyncio.create_task(
+                self.client._game_disconnected.wait()
+            )
+
+            done, pending = await asyncio.wait(
+                [game_end_task, disconnect_task],
+                timeout=3600,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for t in pending:
+                t.cancel()
+
+            if not done:
+                logger.warning("对局已运行超过 3600s，继续等待...")
+                continue
+
+            if disconnect_task in done and not self._game_end_event.is_set():
+                logger.warning("⚠️ 对局中途断线，尝试自动重连...")
+                self._live("⚠️ 对局中途断线，尝试重连...")
+                reconnected = await self.client.auto_reconnect_game()
+                if not reconnected:
+                    logger.error("重连失败，本局作废")
+                    self._live("❌ 重连失败，本局作废")
+                    break
+                self._live("✅ 重连成功，继续对局")
+                continue
+
+            break
 
     async def _on_game_start(self, seat: int, auth_res) -> None:
         """对局开始"""
