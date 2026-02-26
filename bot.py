@@ -476,6 +476,8 @@ class MajsoulBot:
         display.show_round_start(self.game_state)
 
         # 恢复后检查最后一个 action 是否需要我们响应
+        # 注意：如果断线时间较长，服务端可能已经替我们自动摸切了
+        # 先等一小段时间让服务端的后续消息到达，避免出牌冲突
         if actions:
             last = actions[-1]
             last_name = last.name
@@ -487,7 +489,14 @@ class MajsoulBot:
                     msg = pb.ActionDealTile()
                     msg.ParseFromString(last_data)
                     if msg.seat == self.game_state.seat:
-                        if msg.operation and msg.operation.operation_list:
+                        # 等一下，看服务端是否已经替我们出了牌
+                        logger.info("🔄 重连后等待 1s 确认服务端状态...")
+                        await asyncio.sleep(1)
+                        # 如果等待期间收到了新的 action（比如服务端替我们摸切），
+                        # game_state.draw 会被清空，就不需要再出牌了
+                        if not self.game_state.draw:
+                            logger.info("🔄 服务端已替我们出牌，跳过")
+                        elif msg.operation and msg.operation.operation_list:
                             op = MessageToDict(msg.operation, preserving_proto_field_name=True)
                             self.game_state.pending_operation = op
                             await self._process_pending_operation()
@@ -497,6 +506,8 @@ class MajsoulBot:
                     msg = pb.ActionDiscardTile()
                     msg.ParseFromString(last_data)
                     if msg.seat != self.game_state.seat and msg.operation and msg.operation.operation_list:
+                        # 同样等一下
+                        await asyncio.sleep(0.5)
                         op = MessageToDict(msg.operation, preserving_proto_field_name=True)
                         self.game_state.pending_operation = op
                         await self._process_pending_operation()
