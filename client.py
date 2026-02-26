@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import random
+import subprocess
 import uuid
 
 import aiohttp
@@ -22,6 +23,38 @@ class MatchError1023(Exception):
 logger = logging.getLogger("majsoul.client")
 
 MS_HOST = "https://game.maj-soul.com"
+
+# 段位名称映射
+_RANK_NAMES = {1: '初心', 2: '雀士', 3: '雀杰', 4: '雀豪', 5: '雀圣', 6: '魂天'}
+_RANK_MODES = {1: '四人', 2: '三人'}
+
+
+def _get_git_commit() -> str:
+    """获取当前 git commit hash"""
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def format_rank(level_id: int, score: int) -> str:
+    """将段位 ID + 分数格式化为可读字符串
+    
+    level_id 格式: AABCC (如 10301 = 四人雀杰1星)
+    A = 模式 (1=四人, 2=三人)
+    BB = 大段 (01=初心, 02=雀士, 03=雀杰, ...)
+    CC = 小段/星 (01=1星, 02=2星, 03=3星)
+    """
+    mode = level_id // 10000
+    major = (level_id % 10000) // 100
+    minor = level_id % 100
+    mode_str = _RANK_MODES.get(mode, f'?{mode}')
+    rank_str = _RANK_NAMES.get(major, f'?{major}')
+    return f"{mode_str} {rank_str}{minor}星 ({score}pt)"
 
 
 class MajsoulClient:
@@ -199,6 +232,14 @@ class MajsoulClient:
         self.access_token = res.access_token
         self.nickname = res.account.nickname if res.account else ""
         logger.info(f"登录成功! ID: {self.account_id}, 昵称: {self.nickname}")
+        logger.info(f"access_token: {self.access_token}")
+
+        # 段位信息
+        self.rank_info = ""
+        if res.account and res.account.level:
+            lvl = res.account.level
+            self.rank_info = format_rank(lvl.id, lvl.score)
+            logger.info(f"📊 段位: {self.rank_info}")
 
         # 完成登录初始化（loginSuccess + fetchInfo）
         # 不调这些的话段位匹配会报 1307
@@ -207,8 +248,8 @@ class MajsoulClient:
         # 检查残留对局
         if res.game_info and res.game_info.connect_token:
             logger.info(
-                f"🔄 发现残留对局: {res.game_info.game_uuid[:30]}... "
-                f"token={res.game_info.connect_token[:16]}..."
+                f"🔄 发现残留对局: uuid={res.game_info.game_uuid} "
+                f"token={res.game_info.connect_token}"
             )
             self._pending_reconnect = {
                 "connect_token": res.game_info.connect_token,
@@ -284,7 +325,7 @@ class MajsoulClient:
             return False
 
         # === 第 1 步: 直接重连 ===
-        logger.info("重连残留对局 (尝试 1: 直接重连)...")
+        logger.info(f"重连残留对局 (尝试 1: 直接重连) token={connect_token} uuid={game_uuid}")
         success = await self._reconnect_game(connect_token, game_uuid)
         if success:
             return True
@@ -302,8 +343,8 @@ class MajsoulClient:
             game_uuid = game_info["game_uuid"]
             token_changed = new_token != connect_token
             logger.info(
-                f"重新查询 token={new_token[:16]}... "
-                f"({'变了' if token_changed else '没变'})"
+                f"重新查询 token={new_token} "
+                f"({'变了!' if token_changed else '没变'})"
             )
             connect_token = new_token
         except Exception as e:
@@ -332,7 +373,7 @@ class MajsoulClient:
                     if game_info.get("connect_token"):
                         connect_token = game_info["connect_token"]
                         game_uuid = game_info["game_uuid"]
-                        logger.info(f"重新登录后发现残留对局: {game_uuid[:30]}... token={connect_token[:16]}...")
+                        logger.info(f"重新登录后发现残留对局: uuid={game_uuid} token={connect_token}")
                         success = await self._reconnect_game(connect_token, game_uuid)
                         if success:
                             return True
@@ -392,7 +433,7 @@ class MajsoulClient:
                     return True
                 
                 token = game_info["connect_token"]
-                logger.info(f"对局仍在进行: token={token[:16]}...")
+                logger.info(f"对局仍在进行: token={token} uuid={game_info.get('game_uuid', '?')}")
             except Exception as e:
                 logger.warning(f"查询残留对局出错: {e}")
                 # 继续轮询
@@ -422,7 +463,11 @@ class MajsoulClient:
 
     async def _on_game_server_disconnect(self) -> None:
         """game server WebSocket 断线回调"""
-        logger.warning("⚠️ 对局服务器连接断开!")
+        logger.warning(
+            f"⚠️ 对局服务器连接断开! "
+            f"last_token={self._last_connect_token} "
+            f"last_uuid={self._last_game_uuid}"
+        )
         self._game_disconnected.set()
 
     async def auto_reconnect_game(self, max_retries: int = 3,
@@ -458,7 +503,7 @@ class MajsoulClient:
                 
                 connect_token = game_info["connect_token"]
                 game_uuid = game_info["game_uuid"]
-                logger.info(f"找到残留对局: {game_uuid[:30]}... token={connect_token[:16]}...")
+                logger.info(f"找到残留对局: uuid={game_uuid} token={connect_token}")
                 
                 # 重连
                 success = await self._reconnect_game(connect_token, game_uuid)
@@ -712,13 +757,13 @@ class MajsoulClient:
         """匹配成功 — 连接对局服务器"""
         # 如果已经有活跃的 game channel（重连已在进行中），跳过
         if self._connect_lock.locked():
-            logger.info("game server 连接正在进行中，跳过重复的匹配通知")
+            logger.warning("game server 连接正在进行中 (connect_lock locked)，跳过重复的匹配通知")
             return
         msg = pb.NotifyMatchGameStart()
         msg.ParseFromString(data)
         logger.info(
-            f"匹配成功: uuid={msg.game_uuid[:30]}... "
-            f"token={msg.connect_token[:16]}... game_url={msg.game_url}"
+            f"匹配成功: uuid={msg.game_uuid} "
+            f"token={msg.connect_token} game_url={msg.game_url}"
         )
         try:
             await self._connect_game_server(
@@ -822,9 +867,9 @@ class MajsoulClient:
                 req.session = self.access_token
 
                 logger.info(
-                    f"authGame: token={connect_token[:16]}... "
-                    f"session={self.access_token[:16]}... "
-                    f"uuid={game_uuid[:30]}..."
+                    f"authGame: token={connect_token} "
+                    f"session={self.access_token} "
+                    f"uuid={game_uuid}"
                 )
                 res = await self.fast_test.auth_game(req)
 
@@ -832,8 +877,8 @@ class MajsoulClient:
                     error_code = res.error.code
                     logger.error(
                         f"对局认证失败: code={error_code} "
-                        f"token={connect_token[:16]}... "
-                        f"session={self.access_token[:16]}..."
+                        f"token={connect_token} "
+                        f"session={self.access_token}"
                     )
                     last_error = RuntimeError(f"authGame failed: code={error_code}")
                     # code=2: token 无效，同一个 token 重试没用，直接跳出
@@ -996,6 +1041,22 @@ class MajsoulClient:
             logger.warning(f"发送表情失败: {e}")
 
     # ─── 工具方法 ──────────────────────────────────
+
+    async def fetch_rank_info(self) -> str:
+        """查询当前段位信息并返回格式化字符串"""
+        try:
+            req = pb.ReqAccountInfo()
+            req.account_id = self.account_id
+            res = await self.lobby.fetch_account_info(req)
+            d = MessageToDict(res, preserving_proto_field_name=True)
+            acc = d.get('account', {})
+            level = acc.get('level', {})
+            if level:
+                self.rank_info = format_rank(level.get('id', 0), level.get('score', 0))
+                return self.rank_info
+        except Exception as e:
+            logger.warning(f"查询段位失败: {e}")
+        return self.rank_info or "未知"
 
     async def start_event_loop(self) -> None:
         """注册钩子并开始接收事件"""

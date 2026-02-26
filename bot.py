@@ -10,7 +10,7 @@ from datetime import datetime
 import ms.protocol_pb2 as pb
 from google.protobuf.json_format import MessageToDict
 
-from client import MajsoulClient, MatchError1023
+from client import MajsoulClient, MatchError1023, _get_git_commit
 from codec import decode as xor_decode
 from config import load_config
 from game_state import GameState
@@ -134,7 +134,8 @@ class MajsoulBot:
         self._live_log.propagate = False  # 不传播到 root logger
         self._live_handler = None  # 当前局的 file handler
 
-        logger.info(f"🀄 雀魂机器人启动 (日志: {bot_log_path})")
+        git_commit = _get_git_commit()
+        logger.info(f"🀄 雀魂机器人启动 (commit: {git_commit}, 日志: {bot_log_path})")
 
         try:
             await self.client.connect()
@@ -295,6 +296,13 @@ class MajsoulBot:
 
                 self.games_played += 1
 
+                # 对局结束后刷新段位信息
+                try:
+                    rank = await self.client.fetch_rank_info()
+                    logger.info(f"📊 当前段位: {rank} (已完成 {self.games_played} 局)")
+                except Exception as e:
+                    logger.warning(f"刷新段位失败: {e}")
+
                 if self._running and max_games != 1:
                     interval = self.config.run.game_interval
                     logger.info(f"等待 {interval} 秒后继续...")
@@ -329,6 +337,25 @@ class MajsoulBot:
 
         # 创建本局的实况日志文件
         self._start_game_live_log()
+
+        # 显示对局玩家信息
+        try:
+            res_dict = MessageToDict(auth_res, preserving_proto_field_name=True)
+            players = res_dict.get("players", [])
+            if players:
+                p_info = []
+                for i, p in enumerate(players):
+                    nick = p.get("nickname", "?")
+                    lvl = p.get("level", {})
+                    lvl_id = lvl.get("id", 0)
+                    lvl_score = lvl.get("score", 0)
+                    from client import format_rank
+                    rank_str = format_rank(lvl_id, lvl_score) if lvl_id else "?"
+                    me = " ★" if i == seat else ""
+                    p_info.append(f"P{i}: {nick} [{rank_str}]{me}")
+                logger.info("对局玩家: " + " | ".join(p_info))
+        except Exception as e:
+            logger.debug(f"解析玩家信息失败: {e}")
 
         logger.info(f"对局开始! 座位={seat}")
 
