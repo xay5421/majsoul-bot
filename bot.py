@@ -937,28 +937,24 @@ class MajsoulBot:
             if is_riichi:
                 self.ai.send_reach(seat)
             
-            # 检测自家出牌不一致：服务端超时摸切了一张不同的牌
+            # 检测自家出牌不一致：装弱/服务端超时摸切导致实际出牌和 Mortal 决策不同
             if seat == gs.seat and hasattr(self.ai, '_intended_tile') and self.ai._intended_tile:
                 from ai.mortal import ms_to_mjai, mjai_to_ms
                 intended = self.ai._intended_tile
                 actual_mjai = ms_to_mjai(tile)
                 if intended != actual_mjai:
                     if self._nerf_active:
-                        # 装弱采样导致的不一致，静默重同步
                         logger.debug(
-                            f"🤡 装弱重同步: Mortal想打={intended} 实际={actual_mjai}"
+                            f"🤡 装弱修正: Mortal想打={intended} 实际={actual_mjai}"
                         )
                     else:
                         logger.warning(
                             f"⚠️ 出牌不一致! Mortal想打={intended} 服务端实际={actual_mjai}({tile}) "
-                            f"→ 需要重同步 Mortal 状态"
+                            f"→ 直接喂正确的 dahai 给 Mortal"
                         )
-                    corrected = self.ai.build_corrected_events(tile, is_draw, is_riichi)
-                    if corrected is not None:
-                        self.ai.resync_state(corrected)
-                    else:
-                        logger.warning("无法构建修正事件，尝试直接发送 dahai")
-                        self.ai.send_dahai(seat, tile, is_draw)
+                    # 直接把实际出的牌告诉 Mortal，不需要重启/重放
+                    # Mortal 内部状态会根据这个 dahai 事件自我修正
+                    self.ai.send_dahai(seat, tile, is_draw)
                     self.ai._intended_tile = None
                 else:
                     self.ai._intended_tile = None
