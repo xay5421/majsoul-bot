@@ -347,6 +347,56 @@ class MajsoulClient:
         logger.error("重连残留对局失败，等待对局自然结束")
         return False
 
+    async def wait_for_residual_game_to_end(self, poll_interval: int = 30,
+                                             timeout: int = 1800) -> bool:
+        """轮询 fetchGamingInfo 直到残留对局消失
+        
+        当 token 永久失效无法重连时调用此方法。
+        
+        Args:
+            poll_interval: 查询间隔秒数
+            timeout: 最大等待时间秒数（默认 30 分钟）
+            
+        Returns:
+            True 如果对局已消失，False 如果超时
+        """
+        start_time = asyncio.get_event_loop().time()
+        attempt = 0
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed >= timeout:
+                logger.error(f"等待残留对局结束超时 ({timeout}s)")
+                return False
+            
+            attempt += 1
+            remaining = int(timeout - elapsed)
+            logger.info(f"等待残留对局自然结束... (第 {attempt} 次查询, 已等 {int(elapsed)}s, 剩余 {remaining}s)")
+            
+            await asyncio.sleep(poll_interval)
+            
+            try:
+                # 确保 lobby 连接还在
+                if not self._channel or not self._channel.is_connected:
+                    logger.info("大厅连接断开，重新连接...")
+                    await self.close()
+                    await asyncio.sleep(2)
+                    await self.connect()
+                    await self.login(self._username, self._password)
+                
+                gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
+                gd = MessageToDict(gi, preserving_proto_field_name=True)
+                game_info = gd.get("game_info", {})
+                
+                if not game_info.get("connect_token"):
+                    logger.info("✅ 残留对局已结束！")
+                    return True
+                
+                token = game_info["connect_token"]
+                logger.info(f"对局仍在进行: token={token[:16]}...")
+            except Exception as e:
+                logger.warning(f"查询残留对局出错: {e}")
+                # 继续轮询
+
     async def _reconnect_game(self, connect_token: str,
                                game_uuid: str) -> bool:
         """重连到残留对局并恢复状态"""

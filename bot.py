@@ -171,6 +171,21 @@ class MajsoulBot:
                     interval = self.config.run.game_interval
                     logger.info(f"等待 {interval} 秒后继续...")
                     await asyncio.sleep(interval)
+            else:
+                # 重连失败，可能 token 永久失效
+                # 轮询等待残留对局自然结束，然后再开始匹配
+                gi = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
+                gd = MessageToDict(gi, preserving_proto_field_name=True)
+                game_info = gd.get("game_info", {})
+                if game_info.get("connect_token"):
+                    logger.warning("残留对局仍在，token 已失效，等待对局自然结束...")
+                    self._live("⏳ 残留对局 token 失效，等待自然结束...")
+                    cleared = await self.client.wait_for_residual_game_to_end(
+                        poll_interval=30, timeout=1800
+                    )
+                    if not cleared:
+                        logger.error("等待残留对局超时，退出")
+                        return
 
             # 主循环
             max_games = self.config.run.max_games
@@ -214,10 +229,20 @@ class MajsoulBot:
                         else:
                             # 重连失败 — 可能 token 永久失效，等对局自然结束
                             if self._match1023_count >= 3:
-                                # 已经试了 3 轮，每轮内部又重试了多次，大概率是死局
-                                # 等足够长时间让对局超时结束（一局最长约 20 分钟）
-                                logger.error("重连多次失败，等待 5 分钟后重试（等对局自然结束）...")
-                                await asyncio.sleep(300)
+                                # 已经试了 3 轮，大概率是死局
+                                # 用 polling 等待对局自然结束
+                                logger.error("重连多次失败，轮询等待对局自然结束...")
+                                self._live("⏳ 残留对局无法重连，等待自然结束...")
+                                cleared = await self.client.wait_for_residual_game_to_end(
+                                    poll_interval=30, timeout=1800
+                                )
+                                if cleared:
+                                    self._match1023_count = 0
+                                    logger.info("残留对局已结束，恢复匹配")
+                                    continue
+                                else:
+                                    logger.error("等待残留对局超时，退出")
+                                    break
                             else:
                                 wait = min(30 * (2 ** (self._match1023_count - 1)), 120)
                                 logger.error(f"重连残留对局也失败，等 {wait} 秒再试...")
