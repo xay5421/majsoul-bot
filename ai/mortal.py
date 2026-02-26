@@ -95,95 +95,9 @@ class MortalAI(BaseAI):
         logger.warning("已强制切换到 ShantenAI fallback")
 
     def clear_last_reaction(self):
-        """清除缓存的最后决策（重放后需要清除）"""
+        """清除缓存的最后决策"""
         self._last_reaction = None
         self._reach_pending = False
-
-    def resync_state(self, corrected_events: list[dict]) -> bool:
-        """服务端出牌和 Mortal 决策不一致时，重启 Mortal 并重放修正后的事件日志。
-        
-        Args:
-            corrected_events: 修正后的 mjai 事件列表（最后的 dahai 已替换为服务端实际出的牌）
-        Returns:
-            True 表示重同步成功
-        """
-        logger.warning(f"🔄 重同步 Mortal 状态 ({len(corrected_events)} 个事件)")
-        try:
-            # 重启 Mortal 进程
-            self._start_process()
-            
-            # 清空日志，准备重新记录
-            self._mjai_log = []
-            self._last_reaction = None
-            self._reach_pending = False
-            self._intended_tile = None
-            
-            # 重放所有修正后的事件
-            for event in corrected_events:
-                self._send_and_collect(event)
-            
-            logger.info("✅ Mortal 重同步完成")
-            return True
-        except Exception as e:
-            logger.error(f"Mortal 重同步失败: {e}", exc_info=True)
-            self._force_fallback()
-            return False
-
-    def build_corrected_events(self, actual_tile_ms: str, is_moqie: bool, 
-                               is_riichi: bool = False) -> list[dict] | None:
-        """根据 _mjai_log 构建修正后的事件序列。
-        
-        把 Mortal 之前（错误的）自家 dahai 决策替换为服务端实际确认的出牌。
-        返回修正后的 mjai 事件列表，供 resync_state 重放。
-        """
-        if not self._mjai_log:
-            return None
-        
-        actual_mjai = ms_to_mjai(actual_tile_ms)
-        
-        # 解析 _mjai_log 中的所有事件
-        events = []
-        for line in self._mjai_log:
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        
-        if not events:
-            return None
-        
-        # 找到最后一个自家 tsumo 事件的位置
-        last_tsumo_idx = -1
-        for i in range(len(events) - 1, -1, -1):
-            if events[i].get("type") == "tsumo" and events[i].get("actor") == self.player_id:
-                last_tsumo_idx = i
-                break
-        
-        if last_tsumo_idx < 0:
-            return None
-        
-        # 构建修正后的事件序列：
-        # 保留 tsumo 之前的所有事件 + tsumo 本身
-        # 然后添加正确的 dahai（替换 Mortal 的错误决策）
-        corrected = events[:last_tsumo_idx + 1]  # 包含最后的 tsumo
-        
-        # 添加服务端实际确认的 dahai
-        if is_riichi:
-            corrected.append({"type": "reach", "actor": self.player_id})
-        corrected.append({
-            "type": "dahai",
-            "actor": self.player_id,
-            "pai": actual_mjai,
-            "tsumogiri": is_moqie,
-        })
-        if is_riichi:
-            corrected.append({"type": "reach_accepted", "actor": self.player_id})
-        
-        logger.info(
-            f"构建修正事件序列: 共 {len(corrected)} 个事件 "
-            f"(原 {len(events)} 个, 从 tsumo@{last_tsumo_idx} 截断+修正)"
-        )
-        return corrected
 
     def _restart_mortal(self):
         """重启 Mortal 进程（新一局开始时恢复）"""

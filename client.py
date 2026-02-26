@@ -584,49 +584,28 @@ class MajsoulClient:
         return True
 
     async def create_ai_room(self, room_type: str = "4e") -> int | None:
-        """创建友人房 + AI 对手
-
-        Args:
-            room_type: "4e" (四人东), "4s" (四人南)
-
-        Returns:
-            room_id 或 None
-        """
+        """创建友人房 + AI 对手"""
         player_count = 4 if room_type.startswith("4") else 3
-        # mode: 1=四人南(完整), 2=四人东(东风)
         mode_map = {"4e": 2, "4s": 1, "3e": 12, "3s": 11}
-        mode = mode_map.get(room_type, 2)
 
         req = pb.ReqCreateRoom()
         req.player_count = player_count
-        req.mode.mode = mode
+        req.mode.mode = mode_map.get(room_type, 2)
         req.mode.ai = True
         req.client_version_string = self.version
 
         # 标准规则
         dr = req.mode.detail_rule
-        dr.time_fixed = 5
-        dr.time_add = 20
-        dr.dora_count = 3
-        dr.shiduan = 1
-        dr.init_point = 25000
-        dr.fandian = 30000
-        dr.can_jifei = True
-        dr.have_liujumanguan = True
-        dr.have_biao_dora = True
-        dr.have_gang_biao_dora = True
-        dr.have_li_dora = True
-        dr.have_gang_li_dora = True
-        dr.have_sifenglianda = True
-        dr.have_sigangsanle = True
-        dr.have_sijializhi = True
-        dr.have_jiuzhongjiupai = True
+        dr.time_fixed, dr.time_add = 5, 20
+        dr.dora_count, dr.shiduan = 3, 1
+        dr.init_point, dr.fandian = 25000, 30000
+        for attr in ('can_jifei', 'have_liujumanguan', 'have_biao_dora',
+                      'have_gang_biao_dora', 'have_li_dora', 'have_gang_li_dora',
+                      'have_sifenglianda', 'have_sigangsanle', 'have_sijializhi',
+                      'have_jiuzhongjiupai', 'have_toutiao', 'have_helelianzhuang',
+                      'have_helezhongju', 'have_tingpailianzhuang', 'have_tingpaizhongju'):
+            setattr(dr, attr, True)
         dr.have_sanjiahele = False
-        dr.have_toutiao = True
-        dr.have_helelianzhuang = True
-        dr.have_helezhongju = True
-        dr.have_tingpailianzhuang = True
-        dr.have_tingpaizhongju = True
 
         res = await self.lobby.create_room(req)
         if res.error and res.error.code:

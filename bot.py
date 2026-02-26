@@ -308,118 +308,39 @@ class MajsoulBot:
         logger.info(f"对局开始! 座位={seat}")
 
     async def _on_game_restore(self, game_restore) -> None:
-        """断线重连 — 从 snapshot + actions 恢复游戏状态"""
+        """断线重连 — 从 actions 恢复游戏状态"""
         if not self.game_state:
             logger.warning("重连但没有游戏状态，无法恢复")
             return
 
-        # 断线重连：尝试用 GameRestore actions 重放给 Mortal 同步状态
-        # 如果重放失败再 fallback 到 ShantenAI
         replay_to_mortal = self._is_mortal
-
-        # ── 从 snapshot 恢复局面状态 ──
-        snapshot = game_restore.snapshot
-        # Debug: 打印 GameRestore 原始结构
-        from google.protobuf.json_format import MessageToDict
-        restore_dict = MessageToDict(game_restore, preserving_proto_field_name=True)
-        # 只打印 snapshot 部分（不打印 actions 内容）
-        snap_dict = restore_dict.get('snapshot', {})
-        logger.info(f"🔄 GameRestore snapshot 原始数据: {snap_dict}")
-        logger.info(f"🔄 GameRestore actions 数量: {len(game_restore.actions)}")
-        
-        has_snapshot = snapshot and (list(snapshot.hands) or snapshot.left_tile_count > 0)
-        if has_snapshot:
-            logger.info(
-                f"🔄 从 snapshot 恢复: 東{snapshot.chang+1}局 "
-                f"ju={snapshot.ju} ben={snapshot.ben} "
-                f"hands={list(snapshot.hands)} "
-                f"left={snapshot.left_tile_count} "
-                f"doras={list(snapshot.doras)}"
-            )
-            # 构造 new_round 需要的数据
-            scores = []
-            for p in snapshot.players:
-                scores.append(int(p.score))
-            
-            # snapshot.hands 是自家当前手牌
-            tiles_list = list(snapshot.hands)
-            
-            d = {
-                'chang': snapshot.chang,
-                'ju': snapshot.ju,
-                'ben': snapshot.ben,
-                'liqibang': snapshot.liqibang,
-                'doras': list(snapshot.doras),
-                'scores': scores,
-                'tiles': tiles_list,
-            }
-            self.game_state.new_round(d)
-            self.game_state.tiles_left = snapshot.left_tile_count
-            
-            # 恢复各家副露和弃牌
-            for i, p_snap in enumerate(snapshot.players):
-                if i < len(self.game_state.players):
-                    self.game_state.players[i].discards = list(p_snap.qipais)
-        else:
-            logger.warning("⚠️ snapshot 为空，无法恢复局面!")
-
-        # ── 重放增量 actions ──
         actions = game_restore.actions
-        logger.info(f"🔄 重放 {len(actions)} 个动作恢复状态...")
-        
-        # Debug: 打印所有 action 名称概览
-        action_names = [a.name for a in actions]
-        logger.info(f"🔄 actions 概览: {action_names[:20]}{'...' if len(action_names) > 20 else ''}")
+        logger.info(f"🔄 GameRestore: {len(actions)} 个动作")
 
+        # ── 重放 actions 恢复 game_state ──
         for action_proto in actions:
             action_name = action_proto.name
-            raw_data = action_proto.data
-            
-            # GameRestore 的 action data 是明文 protobuf，不需要 XOR 解码！
-            # （实时推送的 ActionPrototype.data 才需要 XOR 解码）
-            action_data = raw_data
+            action_data = action_proto.data  # 明文 protobuf，不需要 XOR
 
             try:
-                # 重放时只更新状态，不做决策
                 if action_name == "ActionNewRound":
                     msg = pb.ActionNewRound()
                     msg.ParseFromString(action_data)
                     tiles_list = list(msg.tiles)
                     doras_list = list(msg.doras) or ([msg.dora] if msg.dora else [])
-                    
-                    # 断线重连时 tiles 可能为空，手牌在 opens 字段里
                     if not tiles_list and msg.opens:
                         for opened in msg.opens:
                             if opened.seat == self.game_state.seat:
                                 tiles_list = list(opened.tiles)
-                                logger.info(
-                                    f"🔄 从 opens 恢复手牌: seat={opened.seat} "
-                                    f"tiles={tiles_list}"
-                                )
                                 break
-                    
-                    opens_info = [{'seat': o.seat, 'tiles': list(o.tiles)} for o in msg.opens]
-                    logger.info(
-                        f"🔄 重放 ActionNewRound: tiles={tiles_list} "
-                        f"doras={doras_list} scores={list(msg.scores)} "
-                        f"chang={msg.chang} ju={msg.ju} ben={msg.ben} "
-                        f"opens={opens_info}"
-                    )
-                    d = {
+                    self.game_state.new_round({
                         'chang': msg.chang, 'ju': msg.ju, 'ben': msg.ben,
-                        'liqibang': msg.liqibang,
-                        'doras': doras_list,
-                        'scores': list(msg.scores),
-                        'tiles': tiles_list,
-                    }
-                    self.game_state.new_round(d)
+                        'liqibang': msg.liqibang, 'doras': doras_list,
+                        'scores': list(msg.scores), 'tiles': tiles_list,
+                    })
                 elif action_name == "ActionDealTile":
                     msg = pb.ActionDealTile()
                     msg.ParseFromString(action_data)
-                    logger.debug(
-                        f"🔄 重放 DealTile: seat={msg.seat} tile={msg.tile!r} "
-                        f"left={msg.left_tile_count} my_seat={self.game_state.seat}"
-                    )
                     if msg.seat == self.game_state.seat and msg.tile:
                         self.game_state.on_draw(msg.seat, msg.tile)
                     elif msg.seat != self.game_state.seat:
@@ -429,71 +350,52 @@ class MajsoulBot:
                 elif action_name == "ActionDiscardTile":
                     msg = pb.ActionDiscardTile()
                     msg.ParseFromString(action_data)
-                    logger.debug(
-                        f"🔄 重放 Discard: seat={msg.seat} tile={msg.tile!r} "
-                        f"moqie={msg.moqie}"
-                    )
-                    self.game_state.on_discard(
-                        msg.seat, msg.tile, msg.moqie, msg.is_liqi
-                    )
+                    self.game_state.on_discard(msg.seat, msg.tile, msg.moqie, msg.is_liqi)
                 elif action_name == "ActionChiPengGang":
                     msg = pb.ActionChiPengGang()
                     msg.ParseFromString(action_data)
-                    self.game_state.on_chi_peng_gang(
-                        msg.seat, msg.type, list(msg.tiles), list(msg.froms)
-                    )
+                    self.game_state.on_chi_peng_gang(msg.seat, msg.type, list(msg.tiles), list(msg.froms))
                 elif action_name == "ActionAnGangAddGang":
                     msg = pb.ActionAnGangAddGang()
                     msg.ParseFromString(action_data)
-                    if msg.type == 3:  # 暗杠
-                        tiles = [msg.tiles] if isinstance(msg.tiles, str) else list(msg.tiles)
-                        self.game_state.on_ankan(msg.seat, tiles)
-                    elif msg.type == 2:  # 加杠
+                    if msg.type == 3:
+                        self.game_state.on_ankan(msg.seat, [msg.tiles] if isinstance(msg.tiles, str) else list(msg.tiles))
+                    elif msg.type == 2:
                         self.game_state.on_kakan(msg.seat, msg.tiles)
             except Exception as e:
                 logger.warning(f"重放 {action_name} 出错: {e}", exc_info=True)
 
-        # ── 重放给 Mortal 同步状态 ──
+        # ── 重放给 Mortal ──
         if replay_to_mortal:
             try:
                 self._replay_actions_to_mortal(actions)
-                # 不要 clear_last_reaction：如果重放最后一步是自家 tsumo，
-                # Mortal 已经返回了有效的 dahai 决策，clear 会导致 fallback 摸切。
-                # 中间步骤的旧决策在后续事件发送时已被覆盖，无需手动清除。
-                logger.info("✅ Mortal 状态同步完成，无需 fallback")
+                logger.info("✅ Mortal 状态同步完成")
             except Exception as e:
-                logger.warning(f"Mortal 重放失败，fallback 到 ShantenAI: {e}")
+                logger.warning(f"Mortal 重放失败，fallback: {e}")
                 self.ai._force_fallback()
 
-        logger.info("✅ 状态恢复完成")
         gs = self.game_state
         logger.info(
-            f"恢复后手牌 ({len(gs.hand)}张): "
-            f"{tiles_to_str(sort_tiles(gs.hand))}"
-            f"{' | 摸牌: ' + tile_to_str(gs.draw) if gs.draw else ''}"
-            f" | 牌山剩余: {gs.tiles_left}"
+            f"✅ 恢复完成: {tiles_to_str(sort_tiles(gs.hand))}"
+            f"{' + ' + tile_to_str(gs.draw) if gs.draw else ''}"
+            f" | 剩{gs.tiles_left}"
         )
-        display.show_round_start(self.game_state)
+        display.show_round_start(gs)
 
         # 恢复后检查最后一个 action 是否需要我们响应
-        # 注意：如果断线时间较长，服务端可能已经替我们自动摸切了
-        # 先等一小段时间让服务端的后续消息到达，避免出牌冲突
         if actions:
             last = actions[-1]
             last_name = last.name
-            last_data = last.data  # GameRestore 的 action data 是明文，不需要 XOR
+            last_data = last.data
 
             try:
-                # 如果最后是 DealTile 且轮到我，需要出牌
                 if last_name == "ActionDealTile":
                     msg = pb.ActionDealTile()
                     msg.ParseFromString(last_data)
                     if msg.seat == self.game_state.seat:
-                        # 等一下，看服务端是否已经替我们出了牌
+                        # 等一下确认服务端没有替我们出牌
                         logger.info("🔄 重连后等待 1s 确认服务端状态...")
                         await asyncio.sleep(1)
-                        # 如果等待期间收到了新的 action（比如服务端替我们摸切），
-                        # game_state.draw 会被清空，就不需要再出牌了
                         if not self.game_state.draw:
                             logger.info("🔄 服务端已替我们出牌，跳过")
                         elif msg.operation and msg.operation.operation_list:
@@ -506,292 +408,161 @@ class MajsoulBot:
                     msg = pb.ActionDiscardTile()
                     msg.ParseFromString(last_data)
                     if msg.seat != self.game_state.seat and msg.operation and msg.operation.operation_list:
-                        # 同样等一下
                         await asyncio.sleep(0.5)
                         op = MessageToDict(msg.operation, preserving_proto_field_name=True)
                         self.game_state.pending_operation = op
                         await self._process_pending_operation()
             except Exception as e:
-                logger.warning(f"重连后恢复最后操作失败 (等待服务端重发): {e}")
+                logger.warning(f"重连后恢复操作失败: {e}")
 
     def _replay_actions_to_mortal(self, actions) -> None:
-        """把 GameRestore 的 actions 转换成 mjai 事件重放给 Mortal，同步其内部状态。
-        
-        这样断线重连后 Mortal 能继续做决策，不需要 fallback 到 ShantenAI。
-        """
+        """把 GameRestore actions 转成 mjai 事件重放给 Mortal"""
         from ai.mortal import ms_to_mjai, MortalAI
         
         ai = self.ai
         if not isinstance(ai, MortalAI):
             raise RuntimeError("AI 不是 MortalAI")
         
-        # 清空上一对局/上一局残留的事件日志，防止 build_corrected_events 混入旧事件
         ai._mjai_log = []
-        
         seat = self.game_state.seat
         _BAKAZE = {0: "E", 1: "S", 2: "W", 3: "N"}
-        
-        # 跟踪立直状态（哪些玩家已立直）
-        riichi_accepted = set()
         _mortal_reach_pending = False
         
         for action_proto in actions:
-            action_name = action_proto.name
-            action_data = action_proto.data  # 明文 protobuf
+            name = action_proto.name
+            data = action_proto.data
             
             try:
-                if action_name == "ActionNewRound":
+                if name == "ActionNewRound":
                     msg = pb.ActionNewRound()
-                    msg.ParseFromString(action_data)
+                    msg.ParseFromString(data)
+                    tiles = list(msg.tiles)
+                    doras = list(msg.doras) or ([msg.dora] if msg.dora else [])
                     
-                    tiles_list = list(msg.tiles)
-                    doras_list = list(msg.doras) or ([msg.dora] if msg.dora else [])
-                    scores = list(msg.scores)
-                    
-                    # 庄家14张：start_kyoku 只发13张，第14张作为 tsumo
                     tsumo_tile = None
-                    if len(tiles_list) == 14 and msg.ju == seat:
-                        tsumo_tile = tiles_list[-1]
-                        tehais_tiles = tiles_list[:13]
-                    else:
-                        tehais_tiles = tiles_list
+                    if len(tiles) == 14 and msg.ju == seat:
+                        tsumo_tile = tiles[-1]
+                        tiles = tiles[:13]
                     
                     tehais = []
                     for i in range(self.game_state.player_count):
                         if i == seat:
-                            tehais.append([ms_to_mjai(t) for t in tehais_tiles])
+                            tehais.append([ms_to_mjai(t) for t in tiles])
                         else:
                             tehais.append(["?"] * 13)
                     
-                    dora_marker = ms_to_mjai(doras_list[0]) if doras_list else "?"
-                    
-                    event = {
+                    ai._send_and_collect({
                         "type": "start_kyoku",
                         "bakaze": _BAKAZE.get(msg.chang, "E"),
-                        "dora_marker": dora_marker,
+                        "dora_marker": ms_to_mjai(doras[0]) if doras else "?",
                         "kyoku": msg.ju + 1,
                         "honba": msg.ben,
                         "kyotaku": msg.liqibang,
                         "oya": msg.ju,
-                        "scores": scores,
+                        "scores": list(msg.scores),
                         "tehais": tehais,
-                    }
-                    ai._send_and_collect(event)
-                    riichi_accepted = set()
+                    })
                     
-                    # 庄家第14张作为 tsumo
                     if tsumo_tile:
-                        tsumo_event = {
-                            "type": "tsumo",
-                            "actor": seat,
+                        resp = ai._send_and_collect({
+                            "type": "tsumo", "actor": seat,
                             "pai": ms_to_mjai(tsumo_tile),
-                        }
-                        resp = ai._send_and_collect(tsumo_event)
-                        # 庄家第一手也可能 reach（极端情况）
+                        })
                         if resp and resp.get("type") == "reach":
-                            r2 = ai._send_and_collect({"type": "reach", "actor": seat})
-                            logger.debug(f"🔄→Mortal start tsumo reach → dahai: {r2}")
+                            ai._send_and_collect({"type": "reach", "actor": seat})
                             _mortal_reach_pending = True
                         else:
                             _mortal_reach_pending = False
-                    
-                    logger.debug(f"🔄→Mortal: start_kyoku tiles={tehais_tiles}"
-                                 f"{' + tsumo=' + tsumo_tile if tsumo_tile else ''}")
                 
-                elif action_name == "ActionDealTile":
+                elif name == "ActionDealTile":
                     msg = pb.ActionDealTile()
-                    msg.ParseFromString(action_data)
-                    
+                    msg.ParseFromString(data)
                     tile = msg.tile if msg.seat == seat else None
-                    event = {
-                        "type": "tsumo",
-                        "actor": msg.seat,
+                    resp = ai._send_and_collect({
+                        "type": "tsumo", "actor": msg.seat,
                         "pai": ms_to_mjai(tile) if tile else "?",
-                    }
-                    resp = ai._send_and_collect(event)
-                    
-                    # 只处理自家 tsumo 的 reach（不要重置他家 tsumo 的 flag）
+                    })
                     if msg.seat == seat:
                         if resp and resp.get("type") == "reach":
-                            # Mortal 想立直：发 reach 获取 dahai
-                            r2 = ai._send_and_collect({"type": "reach", "actor": seat})
-                            logger.debug(f"🔄→Mortal tsumo reach → dahai: {r2}")
+                            ai._send_and_collect({"type": "reach", "actor": seat})
                             _mortal_reach_pending = True
                         else:
                             _mortal_reach_pending = False
                     
-                    logger.debug(f"🔄→Mortal tsumo(seat={msg.seat}): resp={resp}")
-                    
-                elif action_name == "ActionDiscardTile":
+                elif name == "ActionDiscardTile":
                     msg = pb.ActionDiscardTile()
-                    msg.ParseFromString(action_data)
-                    
-                    actual_tile = ms_to_mjai(msg.tile)
+                    msg.ParseFromString(data)
+                    actual = ms_to_mjai(msg.tile)
                     
                     if msg.seat == seat:
-                        # 自家出牌：Mortal 在 tsumo 时已经做了决策
-                        # 只需发确认的 dahai + 处理立直
                         if msg.is_liqi and not _mortal_reach_pending:
-                            # 历史上立直但 Mortal 没想立直
-                            ai._send_and_collect({"type": "reach", "actor": msg.seat})
-                        
-                        event = {
-                            "type": "dahai",
-                            "actor": msg.seat,
-                            "pai": actual_tile,
-                            "tsumogiri": msg.moqie,
-                        }
-                        ai._send_and_collect(event)
-                        
+                            ai._send_and_collect({"type": "reach", "actor": seat})
+                        ai._send_and_collect({
+                            "type": "dahai", "actor": seat,
+                            "pai": actual, "tsumogiri": msg.moqie,
+                        })
                         if msg.is_liqi or _mortal_reach_pending:
-                            ai._send_and_collect({"type": "reach_accepted", "actor": msg.seat})
-                        
+                            ai._send_and_collect({"type": "reach_accepted", "actor": seat})
                         _mortal_reach_pending = False
                     else:
-                        # 他家出牌
                         if msg.is_liqi:
                             ai._send_and_collect({"type": "reach", "actor": msg.seat})
-                        
-                        event = {
-                            "type": "dahai",
-                            "actor": msg.seat,
-                            "pai": actual_tile,
-                            "tsumogiri": msg.moqie,
-                        }
-                        resp = ai._send_and_collect(event)
-                        
+                        ai._send_and_collect({
+                            "type": "dahai", "actor": msg.seat,
+                            "pai": actual, "tsumogiri": msg.moqie,
+                        })
                         if msg.is_liqi:
                             ai._send_and_collect({"type": "reach_accepted", "actor": msg.seat})
-                        
-                        logger.debug(f"🔄→Mortal dahai(seat={msg.seat}): resp={resp}")
-                    
-                elif action_name == "ActionLiqi":
-                    # 立直宣言 — 不需要单独处理，在 DiscardTile 的 is_liqi 里处理
-                    pass
-                    
-                elif action_name == "ActionLiqiAccepted":
-                    # 立直成立
-                    msg = pb.ActionDiscardTile()  # 通用解析
-                    # reach_accepted 在 dahai(is_liqi) 之后自动发
-                    pass
                 
-                elif action_name == "ActionChiPengGang":
+                elif name == "ActionChiPengGang":
                     msg = pb.ActionChiPengGang()
-                    msg.ParseFromString(action_data)
-                    
+                    msg.ParseFromString(data)
                     tiles = list(msg.tiles)
                     froms = list(msg.froms)
                     
-                    if msg.type == 0:  # 吃
-                        # froms 指出哪张来自哪个玩家
-                        target = -1
-                        pai = tiles[0]
-                        for i, f in enumerate(froms):
-                            if f != msg.seat:
-                                target = f
-                                pai = tiles[i]
-                                break
-                        consumed = [tiles[i] for i, f in enumerate(froms) if f == msg.seat]
-                        event = {
-                            "type": "chi",
-                            "actor": msg.seat,
-                            "target": target,
-                            "pai": ms_to_mjai(pai),
-                            "consumed": [ms_to_mjai(t) for t in consumed],
-                        }
-                    elif msg.type == 1:  # 碰
-                        # froms 指出哪张来自哪个玩家
-                        target_seat = -1
-                        pai = tiles[0]
-                        for i, f in enumerate(froms):
-                            if f != msg.seat:
-                                target_seat = f
-                                pai = tiles[i]
-                                break
-                        # consumed 是 actor 手中的2张
-                        consumed = [tiles[i] for i, f in enumerate(froms) if f == msg.seat]
-                        
-                        event = {
-                            "type": "pon",
-                            "actor": msg.seat,
-                            "target": target_seat,
-                            "pai": ms_to_mjai(pai),
-                            "consumed": [ms_to_mjai(t) for t in consumed],
-                        }
-                    elif msg.type == 2:  # 大明杠
-                        target = -1
-                        pai = tiles[0]
-                        for i, f in enumerate(froms):
-                            if f != msg.seat:
-                                target = f
-                                pai = tiles[i]
-                                break
-                        # consumed 是 actor 手中的3张（不含被杠的那张）
-                        consumed = [tiles[i] for i, f in enumerate(froms) if f == msg.seat]
-                        event = {
-                            "type": "daiminkan",
-                            "actor": msg.seat,
-                            "target": target,
-                            "pai": ms_to_mjai(pai),
-                            "consumed": [ms_to_mjai(t) for t in consumed],
-                        }
-                    else:
-                        logger.debug(f"🔄→Mortal: 跳过 ChiPengGang type={msg.type}")
-                        continue
+                    target = -1
+                    pai = tiles[0]
+                    for i, f in enumerate(froms):
+                        if f != msg.seat:
+                            target = f
+                            pai = tiles[i]
+                            break
+                    consumed = [tiles[i] for i, f in enumerate(froms) if f == msg.seat]
                     
-                    ai._send_and_collect(event)
+                    type_map = {0: "chi", 1: "pon", 2: "daiminkan"}
+                    etype = type_map.get(msg.type)
+                    if etype:
+                        ai._send_and_collect({
+                            "type": etype, "actor": msg.seat, "target": target,
+                            "pai": ms_to_mjai(pai),
+                            "consumed": [ms_to_mjai(t) for t in consumed],
+                        })
                 
-                elif action_name == "ActionAnGangAddGang":
+                elif name == "ActionAnGangAddGang":
                     msg = pb.ActionAnGangAddGang()
-                    msg.ParseFromString(action_data)
-                    
-                    # proto 只有 tiles 字段（string），没有 tile
+                    msg.ParseFromString(data)
                     tile = msg.tiles
                     
                     if msg.type == 3:  # 暗杠
-                        # 处理赤牌：赤牌每种只有1张
                         from tiles import normalize_aka
                         if tile.startswith("0"):
                             normal = normalize_aka(tile)
                             consumed = [ms_to_mjai(normal)] * 3 + [ms_to_mjai(tile)]
                         elif tile in ("5m", "5p", "5s"):
-                            aka = "0" + tile[1]
-                            consumed = [ms_to_mjai(tile)] * 3 + [ms_to_mjai(aka)]
+                            consumed = [ms_to_mjai(tile)] * 3 + [ms_to_mjai("0" + tile[1])]
                         else:
                             consumed = [ms_to_mjai(tile)] * 4
-                        event = {
-                            "type": "ankan",
-                            "actor": msg.seat,
-                            "consumed": consumed,
-                        }
+                        ai._send_and_collect({"type": "ankan", "actor": msg.seat, "consumed": consumed})
                     elif msg.type == 2:  # 加杠
-                        consumed = [ms_to_mjai(tile)] * 3  # 碰时的3张牌
-                        event = {
-                            "type": "kakan",
-                            "actor": msg.seat,
+                        ai._send_and_collect({
+                            "type": "kakan", "actor": msg.seat,
                             "pai": ms_to_mjai(tile),
-                            "consumed": consumed,
-                        }
-                    else:
-                        logger.debug(f"🔄→Mortal: 跳过 AnGangAddGang type={msg.type}")
-                        continue
-                    
-                    ai._send_and_collect(event)
-                
-                elif action_name == "ActionHule":
-                    # 和牌 — 重连时不太可能出现
-                    pass
-                    
-                elif action_name == "ActionNoTile":
-                    # 流局 — 重连时不太可能出现
-                    pass
-                
-                else:
-                    logger.debug(f"🔄→Mortal: 跳过未知 action: {action_name}")
+                            "consumed": [ms_to_mjai(tile)] * 3,
+                        })
                     
             except Exception as e:
-                logger.warning(f"🔄→Mortal: 重放 {action_name} 失败: {e}")
-                raise  # 重放失败则整个 fallback
+                logger.warning(f"Mortal 重放 {name} 失败: {e}")
+                raise
 
     async def _on_action(self, action_name: str, data: bytes) -> None:
         """处理对局中的操作 (data 已经过 XOR 解密)"""
