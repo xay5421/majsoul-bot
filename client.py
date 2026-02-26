@@ -170,7 +170,10 @@ class MajsoulClient:
 
         # 检查残留对局
         if res.game_info and res.game_info.connect_token:
-            logger.info(f"🔄 发现残留对局: {res.game_info.game_uuid[:30]}...")
+            logger.info(
+                f"🔄 发现残留对局: {res.game_info.game_uuid[:30]}... "
+                f"token={res.game_info.connect_token[:16]}..."
+            )
             self._pending_reconnect = {
                 "connect_token": res.game_info.connect_token,
                 "game_uuid": res.game_info.game_uuid,
@@ -233,7 +236,7 @@ class MajsoulClient:
             if game_info.get("connect_token"):
                 connect_token = game_info["connect_token"]
                 game_uuid = game_info["game_uuid"]
-                logger.info(f"🔄 发现残留对局: {game_uuid[:30]}...")
+                logger.info(f"🔄 发现残留对局: {game_uuid[:30]}... token={connect_token[:16]}...")
 
         if not connect_token:
             return False
@@ -253,8 +256,11 @@ class MajsoulClient:
                     gd = MessageToDict(gi, preserving_proto_field_name=True)
                     game_info = gd.get("game_info", {})
                     if game_info.get("connect_token"):
-                        connect_token = game_info["connect_token"]
+                        new_token = game_info["connect_token"]
                         game_uuid = game_info["game_uuid"]
+                        changed = "变了" if new_token != connect_token else "没变"
+                        logger.info(f"重新查询 token={new_token[:16]}... ({changed})")
+                        connect_token = new_token
                     else:
                         logger.info("残留对局已消失，可能已结束")
                         return False
@@ -341,7 +347,7 @@ class MajsoulClient:
                 
                 connect_token = game_info["connect_token"]
                 game_uuid = game_info["game_uuid"]
-                logger.info(f"找到残留对局: {game_uuid[:30]}...")
+                logger.info(f"找到残留对局: {game_uuid[:30]}... token={connect_token[:16]}...")
                 
                 # 重连
                 success = await self._reconnect_game(connect_token, game_uuid)
@@ -611,6 +617,10 @@ class MajsoulClient:
             return
         msg = pb.NotifyMatchGameStart()
         msg.ParseFromString(data)
+        logger.info(
+            f"匹配成功: uuid={msg.game_uuid[:30]}... "
+            f"token={msg.connect_token[:16]}... game_url={msg.game_url}"
+        )
         await self._connect_game_server(
             msg.game_url, msg.connect_token, msg.game_uuid
         )
@@ -697,10 +707,19 @@ class MajsoulClient:
                 req.game_uuid = game_uuid
                 req.session = self.access_token
 
+                logger.info(
+                    f"authGame: token={connect_token[:16]}... "
+                    f"session={self.access_token[:16]}... "
+                    f"uuid={game_uuid[:30]}..."
+                )
                 res = await self.fast_test.auth_game(req)
 
                 if res.error and res.error.code:
-                    logger.error(f"对局认证失败: code={res.error.code}")
+                    logger.error(
+                        f"对局认证失败: code={res.error.code} "
+                        f"token={connect_token[:16]}... "
+                        f"session={self.access_token[:16]}..."
+                    )
                     last_error = RuntimeError(f"authGame failed: code={res.error.code}")
                     continue  # 重试
 
