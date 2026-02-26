@@ -261,6 +261,32 @@ class MajsoulClient:
                 except Exception as e:
                     logger.warning(f"查询残留对局失败: {e}")
 
+        # 3 次全失败，尝试重新登录刷新 access_token 后再试一次
+        if self._username and self._password:
+            logger.warning("🔄 重连 3 次全失败，尝试重新登录刷新 token...")
+            try:
+                await self.close()
+                await asyncio.sleep(3)
+                await self.connect()
+                ok = await self.login(self._username, self._password)
+                if ok:
+                    # 重新查询残留对局
+                    gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
+                    gd = MessageToDict(gi, preserving_proto_field_name=True)
+                    game_info = gd.get("game_info", {})
+                    if game_info.get("connect_token"):
+                        connect_token = game_info["connect_token"]
+                        game_uuid = game_info["game_uuid"]
+                        logger.info(f"重新登录后发现残留对局: {game_uuid[:30]}...")
+                        success = await self._reconnect_game(connect_token, game_uuid)
+                        if success:
+                            return True
+                    else:
+                        logger.info("重新登录后残留对局已消失")
+                        return False
+            except Exception as e:
+                logger.error(f"重新登录失败: {e}")
+
         logger.error("重连残留对局失败，已尝试 3 次")
         return False
 
