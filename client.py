@@ -648,52 +648,72 @@ class MajsoulClient:
         m = re.match(r'(wss://[^/]+)', self.channel._endpoint)
         route_base = m.group(1) if m else 'wss://route-5.maj-soul.com:443'
         ws_url = f'{route_base}/game-gateway'
-        
-        logger.info(f"连接对局服务器: {ws_url} (game_url={game_url})")
 
-        # 关闭旧的 game channel
-        if self._game_channel:
+        # 连接 + 认证，最多重试 3 次（首次连接断线时用原始 token 重试）
+        last_error = None
+        for attempt in range(1, 4):
+            if attempt > 1:
+                logger.info(f"🔄 game server 连接重试 ({attempt}/3)...")
+                await asyncio.sleep(2)
+            
+            logger.info(f"连接对局服务器: {ws_url} (game_url={game_url})")
+
+            # 关闭旧的 game channel
+            if self._game_channel:
+                try:
+                    await self._game_channel.close()
+                except Exception:
+                    pass
+
+            # 创建新的 channel 连接到对局服务器
+            self._game_channel = MSRPCChannel(ws_url)
+
+            # 注册对局事件 hook（在 connect 之前注册）
+            self._game_channel.add_hook(
+                ".lq.ActionPrototype", self._on_action_prototype
+            )
+            self._game_channel.add_hook(
+                ".lq.NotifyGameEndResult", self._on_game_end
+            )
+            self._game_channel.add_hook(
+                ".lq.NotifyGameTerminate", self._on_game_end
+            )
+
             try:
-                await self._game_channel.close()
-            except Exception:
-                pass
+                # 连接
+                await self._game_channel.connect("https://game.maj-soul.com")
+                logger.info("对局服务器连接成功")
+                
+                # 注册断线回调
+                self._game_channel.on_disconnect(self._on_game_server_disconnect)
 
-        # 创建新的 channel 连接到对局服务器
-        self._game_channel = MSRPCChannel(ws_url)
+                # 在新 channel 上创建 FastTest 服务
+                self.fast_test = FastTest(self._game_channel)
 
-        # 注册对局事件 hook（在 connect 之前注册）
-        self._game_channel.add_hook(
-            ".lq.ActionPrototype", self._on_action_prototype
-        )
-        self._game_channel.add_hook(
-            ".lq.NotifyGameEndResult", self._on_game_end
-        )
-        self._game_channel.add_hook(
-            ".lq.NotifyGameTerminate", self._on_game_end
-        )
+                # 认证对局 (需要 session=access_token)
+                req = pb.ReqAuthGame()
+                req.account_id = self.account_id
+                req.token = connect_token
+                req.game_uuid = game_uuid
+                req.session = self.access_token
 
-        # 连接
-        await self._game_channel.connect("https://game.maj-soul.com")
-        logger.info("对局服务器连接成功")
-        
-        # 注册断线回调
-        self._game_channel.on_disconnect(self._on_game_server_disconnect)
+                res = await self.fast_test.auth_game(req)
 
-        # 在新 channel 上创建 FastTest 服务
-        self.fast_test = FastTest(self._game_channel)
+                if res.error and res.error.code:
+                    logger.error(f"对局认证失败: code={res.error.code}")
+                    last_error = RuntimeError(f"authGame failed: code={res.error.code}")
+                    continue  # 重试
 
-        # 认证对局 (需要 session=access_token)
-        req = pb.ReqAuthGame()
-        req.account_id = self.account_id
-        req.token = connect_token
-        req.game_uuid = game_uuid
-        req.session = self.access_token
-
-        res = await self.fast_test.auth_game(req)
-
-        if res.error and res.error.code:
-            logger.error(f"对局认证失败: code={res.error.code}")
-            raise RuntimeError(f"authGame failed: code={res.error.code}")
+                # 认证成功，跳出重试循环
+                self._game_disconnected.clear()
+                break
+            except Exception as e:
+                logger.warning(f"game server 连接/认证失败: {e}")
+                last_error = e
+                continue
+        else:
+            # 3 次都失败
+            raise last_error or RuntimeError("game server 连接失败")
 
         res_dict = MessageToDict(res, preserving_proto_field_name=True)
 
