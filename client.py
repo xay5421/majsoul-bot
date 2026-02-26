@@ -274,7 +274,12 @@ class MajsoulClient:
             )
             return True
         except Exception as e:
-            # 只有在 game channel 实际连通的情况下才视为"部分成功"
+            err_msg = str(e)
+            # authGame 认证失败不能容忍，必须重试
+            if "authGame failed" in err_msg:
+                logger.error(f"重连对局失败 (认证失败): {e}")
+                return False
+            # 其他错误：如果 game channel 连通且 fast_test 可用，视为部分成功
             if (self._game_channel and self._game_channel.is_connected
                     and self.fast_test):
                 logger.warning(f"重连状态恢复不完整 (可继续): {e}")
@@ -662,7 +667,7 @@ class MajsoulClient:
 
         if res.error and res.error.code:
             logger.error(f"对局认证失败: code={res.error.code}")
-            return
+            raise RuntimeError(f"authGame failed: code={res.error.code}")
 
         res_dict = MessageToDict(res, preserving_proto_field_name=True)
 
