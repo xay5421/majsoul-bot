@@ -203,15 +203,20 @@ class MajsoulBot:
                             level=self.config.match.level,
                         )
                     except MatchError1023:
-                        logger.warning("账号仍在对局中 (1023)，尝试重连残留对局...")
+                        self._match1023_count = getattr(self, '_match1023_count', 0) + 1
+                        logger.warning(f"账号仍在对局中 (1023)，第 {self._match1023_count} 次，尝试重连残留对局...")
                         reconnected = await self.client.check_and_reconnect_game()
                         if reconnected:
                             logger.info("已重连残留对局，等待对局结束...")
+                            self._match1023_count = 0
                             # 直接进入下面的等待对局结束逻辑
                             success = True
                         else:
-                            logger.error("重连残留对局也失败，等 30 秒再试...")
-                            await asyncio.sleep(30)
+                            # 重连失败，等服务端清理残留对局
+                            # 逐次加长等待：30s, 60s, 120s, 最多 300s
+                            wait = min(30 * (2 ** (self._match1023_count - 1)), 300)
+                            logger.error(f"重连残留对局也失败，等 {wait} 秒再试...")
+                            await asyncio.sleep(wait)
                             continue
                     if not success:
                         logger.error("匹配失败，等待重试...")
@@ -219,6 +224,7 @@ class MajsoulBot:
                         continue
 
                 # 等待对局结束（同时监控断线）
+                self._match1023_count = 0  # 成功进入对局，重置计数
                 logger.info("等待对局结束...")
                 while not self._game_end_event.is_set():
                     # 同时等 game_end 和断线信号
