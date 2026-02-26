@@ -114,7 +114,21 @@ class MSRPCChannel:
                 except Exception:
                     pass
 
-    async def send_request(self, name, msg):
+    async def send_request(self, name, msg, timeout=15):
+        """发送 RPC 请求并等待响应
+
+        Args:
+            name: RPC 方法名
+            msg: 序列化后的 protobuf 请求
+            timeout: 等待响应的超时秒数 (默认 15s)
+
+        Raises:
+            asyncio.TimeoutError: 超时无响应
+            ConnectionError: 连接已断开
+        """
+        if not self.is_connected:
+            raise ConnectionError(f"RPC call {name} failed: not connected")
+
         idx = self._new_req_idx
         self._new_req_idx = (self._new_req_idx + 1) % 60007
 
@@ -124,13 +138,22 @@ class MSRPCChannel:
         evt = asyncio.Event()
         self._req_events[idx] = evt
 
-        await self._ws.send(pkt)
-        await evt.wait()
+        try:
+            await self._ws.send(pkt)
+        except Exception as e:
+            del self._req_events[idx]
+            raise ConnectionError(f"RPC send {name} failed: {e}")
 
-        if not idx in self._res:
-            return None
-        res = self._res[idx]
-        del self._res[idx]
+        try:
+            await asyncio.wait_for(evt.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            del self._req_events[idx]
+            self._res.pop(idx, None)
+            raise asyncio.TimeoutError(f"RPC call {name} timed out after {timeout}s")
+
+        if idx not in self._res:
+            raise ConnectionError(f"RPC call {name} failed: connection lost during wait")
+        res = self._res.pop(idx)
 
         if idx in self._req_events:
             del self._req_events[idx]
@@ -157,12 +180,10 @@ class MSRPCService:
     def get_res_class(self, method):
         raise NotImplementedError
 
-    async def call_method(self, method, req):
+    async def call_method(self, method, req, timeout=15):
         msg = req.SerializeToString()
         name = '.{}.{}.{}'.format(self.get_package_name(), self.get_service_name(), method)
-        res_msg = await self._channel.send_request(name, msg)
-        if res_msg is None:
-            raise ConnectionError(f"RPC call {name} failed: connection lost")
+        res_msg = await self._channel.send_request(name, msg, timeout=timeout)
         res_class = self.get_res_class(method)
         res = res_class()
         res.ParseFromString(res_msg)

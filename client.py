@@ -126,6 +126,42 @@ class MajsoulClient:
                 pass
             logger.info("连接已关闭")
 
+    async def reconnect_lobby(self) -> bool:
+        """重新连接 lobby（断线后恢复）
+        
+        关闭旧 lobby 连接，重新 connect + login，保留 game channel。
+        Returns:
+            True 如果重连成功
+        """
+        logger.info("🔄 重连 lobby...")
+        # 只关闭 lobby，保留 game channel
+        old_game_channel = self._game_channel
+        old_fast_test = self.fast_test
+        
+        if self.channel:
+            try:
+                await self.channel.close()
+            except Exception:
+                pass
+        
+        try:
+            await self.connect()
+            ok = await self.login(self._username, self._password)
+            if ok:
+                self._register_hooks()
+                # 恢复 game channel 引用
+                if old_game_channel and old_game_channel.is_connected:
+                    self._game_channel = old_game_channel
+                    self.fast_test = old_fast_test
+                logger.info("✅ lobby 重连成功")
+                return True
+            else:
+                logger.error("lobby 重连登录失败")
+                return False
+        except Exception as e:
+            logger.error(f"lobby 重连失败: {e}")
+            return False
+
     # ─── 登录 ─────────────────────────────────────
 
     async def login(self, username: str, password: str) -> bool:
@@ -215,6 +251,12 @@ class MajsoulClient:
     async def check_and_reconnect_game(self) -> bool:
         """检查并重连残留对局（带重试）
 
+        策略:
+        1. 直接用当前 token 重连
+        2. 失败 → 重新查询 token（可能变了）→ 重连
+        3. token 没变 & code=2 → 重新登录拿新 session → 重连
+        4. 仍然 code=2 → 放弃，等对局自然结束
+
         Returns:
             True 如果成功重连了一局
         """
@@ -241,59 +283,68 @@ class MajsoulClient:
         if not connect_token:
             return False
 
-        # 最多重试 3 次
-        for attempt in range(1, 4):
-            logger.info(f"重连残留对局 (尝试 {attempt}/3)...")
+        # === 第 1 步: 直接重连 ===
+        logger.info("重连残留对局 (尝试 1: 直接重连)...")
+        success = await self._reconnect_game(connect_token, game_uuid)
+        if success:
+            return True
+
+        # === 第 2 步: 重新查询 token ===
+        await asyncio.sleep(3)
+        try:
+            gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
+            gd = MessageToDict(gi, preserving_proto_field_name=True)
+            game_info = gd.get("game_info", {})
+            if not game_info.get("connect_token"):
+                logger.info("残留对局已消失，可能已结束")
+                return False
+            new_token = game_info["connect_token"]
+            game_uuid = game_info["game_uuid"]
+            token_changed = new_token != connect_token
+            logger.info(
+                f"重新查询 token={new_token[:16]}... "
+                f"({'变了' if token_changed else '没变'})"
+            )
+            connect_token = new_token
+        except Exception as e:
+            logger.warning(f"查询残留对局失败: {e}")
+            token_changed = False
+
+        if token_changed:
+            # token 变了，用新 token 再试
+            logger.info("重连残留对局 (尝试 2: 新 token)...")
             success = await self._reconnect_game(connect_token, game_uuid)
             if success:
                 return True
-            if attempt < 3:
-                logger.info("等待 5s 后重试...")
-                await asyncio.sleep(5)
-                # 重新查询，token 可能变了
-                try:
-                    gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
-                    gd = MessageToDict(gi, preserving_proto_field_name=True)
-                    game_info = gd.get("game_info", {})
-                    if game_info.get("connect_token"):
-                        new_token = game_info["connect_token"]
-                        game_uuid = game_info["game_uuid"]
-                        changed = "变了" if new_token != connect_token else "没变"
-                        logger.info(f"重新查询 token={new_token[:16]}... ({changed})")
-                        connect_token = new_token
-                    else:
-                        logger.info("残留对局已消失，可能已结束")
-                        return False
-                except Exception as e:
-                    logger.warning(f"查询残留对局失败: {e}")
 
-        # 3 次全失败，尝试重新登录刷新 access_token 后再试一次
+        # === 第 3 步: 重新登录刷新 session ===
         if self._username and self._password:
-            logger.warning("🔄 重连 3 次全失败，尝试重新登录刷新 token...")
+            logger.warning("🔄 重连失败，尝试重新登录刷新 session...")
             try:
                 await self.close()
                 await asyncio.sleep(3)
                 await self.connect()
                 ok = await self.login(self._username, self._password)
                 if ok:
-                    # 重新查询残留对局
                     gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
                     gd = MessageToDict(gi, preserving_proto_field_name=True)
                     game_info = gd.get("game_info", {})
                     if game_info.get("connect_token"):
                         connect_token = game_info["connect_token"]
                         game_uuid = game_info["game_uuid"]
-                        logger.info(f"重新登录后发现残留对局: {game_uuid[:30]}...")
+                        logger.info(f"重新登录后发现残留对局: {game_uuid[:30]}... token={connect_token[:16]}...")
                         success = await self._reconnect_game(connect_token, game_uuid)
                         if success:
                             return True
+                        logger.error("重新登录后重连仍失败 — token 可能已永久失效")
                     else:
                         logger.info("重新登录后残留对局已消失")
                         return False
             except Exception as e:
                 logger.error(f"重新登录失败: {e}")
 
-        logger.error("重连残留对局失败，已尝试 3 次")
+        # === 放弃 ===
+        logger.error("重连残留对局失败，等待对局自然结束")
         return False
 
     async def _reconnect_game(self, connect_token: str,
@@ -329,6 +380,7 @@ class MajsoulClient:
         """对局中途断线自动重连
         
         通过 lobby 查询残留对局信息，重新连接 game server。
+        如果 lobby 也断了，先重连 lobby。
         
         Returns:
             True 如果重连成功
@@ -336,6 +388,15 @@ class MajsoulClient:
         for attempt in range(1, max_retries + 1):
             logger.info(f"🔄 尝试重连对局 ({attempt}/{max_retries})...")
             try:
+                # 先检查 lobby 是否还活着
+                if not self.channel or not self.channel.is_connected:
+                    logger.warning("lobby 也断了，先重连 lobby...")
+                    if not await self.reconnect_lobby():
+                        logger.error("lobby 重连失败")
+                        if attempt < max_retries:
+                            await asyncio.sleep(retry_interval)
+                        continue
+
                 # 通过 lobby 查残留对局
                 gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
                 gd = MessageToDict(gi, preserving_proto_field_name=True)
@@ -367,11 +428,13 @@ class MajsoulClient:
 
     # ─── 心跳 ─────────────────────────────────────
 
-    async def heartbeat_loop(self, interval: int = 15) -> None:
+    async def heartbeat_loop(self, interval: int = 10) -> None:
         """心跳保活循环 — 同时给 lobby 和 game server 发心跳
         
-        interval 设为 15 秒，因为禁用了 websockets 内建 ping，
-        需要靠应用层心跳来检测连接存活。
+        interval 设为 10 秒，加速断线检测。
+        禁用了 websockets 内建 ping，需要靠应用层心跳来检测连接存活。
+        
+        如果 lobby 心跳连续失败，会自动重连 lobby。
         """
         game_fail_count = 0
         lobby_fail_count = 0
@@ -380,24 +443,30 @@ class MajsoulClient:
             try:
                 req = pb.ReqHeatBeat()
                 req.no_operation_counter = 0
-                await asyncio.wait_for(self.lobby.heatbeat(req), timeout=10)
+                await asyncio.wait_for(self.lobby.heatbeat(req), timeout=8)
                 logger.debug("心跳 OK (lobby)")
                 lobby_fail_count = 0
             except asyncio.CancelledError:
                 raise  # 让 task cancel 正常传播
             except Exception as e:
                 lobby_fail_count += 1
-                logger.warning(f"心跳失败 (lobby, 连续{lobby_fail_count}次): {e}")
+                err_detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                logger.warning(f"心跳失败 (lobby, 连续{lobby_fail_count}次): {err_detail}")
                 if lobby_fail_count >= 5:
-                    logger.error("lobby 心跳连续5次失败，连接已断开，退出心跳循环")
-                    break
+                    logger.error("lobby 心跳连续5次失败，尝试重连 lobby...")
+                    reconnected = await self.reconnect_lobby()
+                    if reconnected:
+                        lobby_fail_count = 0
+                    else:
+                        logger.error("lobby 重连失败，退出心跳循环")
+                        break
             
             # game server 心跳 (FastTest 用 checkNetworkDelay，不是 heartbeat)
             if self.fast_test and self._game_channel and self._game_channel.is_connected:
                 try:
                     greq = pb.ReqCommon()
                     await asyncio.wait_for(
-                        self.fast_test.check_network_delay(greq), timeout=10
+                        self.fast_test.check_network_delay(greq), timeout=8
                     )
                     logger.debug("心跳 OK (game)")
                     game_fail_count = 0
@@ -405,7 +474,8 @@ class MajsoulClient:
                     raise
                 except Exception as e:
                     game_fail_count += 1
-                    logger.warning(f"心跳失败 (game, 连续{game_fail_count}次): {e}")
+                    err_detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                    logger.warning(f"心跳失败 (game, 连续{game_fail_count}次): {err_detail}")
                     if game_fail_count >= 3:
                         logger.error("game server 心跳连续3次失败，标记断线")
                         self._game_disconnected.set()
@@ -659,7 +729,7 @@ class MajsoulClient:
         route_base = m.group(1) if m else 'wss://route-5.maj-soul.com:443'
         ws_url = f'{route_base}/game-gateway'
 
-        # 连接 + 认证，最多重试 3 次（首次连接断线时用原始 token 重试）
+        # 连接 + 认证，最多重试 3 次
         last_error = None
         for attempt in range(1, 4):
             if attempt > 1:
@@ -690,12 +760,17 @@ class MajsoulClient:
             )
 
             try:
-                # 连接
+                # 连接 — 注册断线回调 BEFORE connect，防止连上后瞬断漏掉
+                self._game_channel.on_disconnect(self._on_game_server_disconnect)
+
                 await self._game_channel.connect("https://game.maj-soul.com")
                 logger.info("对局服务器连接成功")
-                
-                # 注册断线回调
-                self._game_channel.on_disconnect(self._on_game_server_disconnect)
+
+                # 确认连接仍然存活（防止 connect 后瞬断）
+                if not self._game_channel.is_connected:
+                    logger.warning("对局服务器连接后立即断开")
+                    last_error = ConnectionError("game server disconnected immediately")
+                    continue
 
                 # 在新 channel 上创建 FastTest 服务
                 self.fast_test = FastTest(self._game_channel)
@@ -715,24 +790,32 @@ class MajsoulClient:
                 res = await self.fast_test.auth_game(req)
 
                 if res.error and res.error.code:
+                    error_code = res.error.code
                     logger.error(
-                        f"对局认证失败: code={res.error.code} "
+                        f"对局认证失败: code={error_code} "
                         f"token={connect_token[:16]}... "
                         f"session={self.access_token[:16]}..."
                     )
-                    last_error = RuntimeError(f"authGame failed: code={res.error.code}")
-                    continue  # 重试
+                    last_error = RuntimeError(f"authGame failed: code={error_code}")
+                    # code=2: token 无效，同一个 token 重试没用，直接跳出
+                    if error_code == 2:
+                        break
+                    continue  # 其他错误码可以重试
 
                 # 认证成功，跳出重试循环
                 self._game_disconnected.clear()
                 break
             except Exception as e:
-                logger.warning(f"game server 连接/认证失败: {e}")
+                logger.warning(f"game server 连接/认证失败: {type(e).__name__}: {e}")
                 last_error = e
                 continue
         else:
             # 3 次都失败
             raise last_error or RuntimeError("game server 连接失败")
+
+        # 如果是 code=2 break 出来的，也要抛异常
+        if last_error and "code=2" in str(last_error):
+            raise last_error
 
         res_dict = MessageToDict(res, preserving_proto_field_name=True)
 

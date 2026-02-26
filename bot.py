@@ -212,11 +212,16 @@ class MajsoulBot:
                             # 直接进入下面的等待对局结束逻辑
                             success = True
                         else:
-                            # 重连失败，等服务端清理残留对局
-                            # 逐次加长等待：30s, 60s, 120s, 最多 300s
-                            wait = min(30 * (2 ** (self._match1023_count - 1)), 300)
-                            logger.error(f"重连残留对局也失败，等 {wait} 秒再试...")
-                            await asyncio.sleep(wait)
+                            # 重连失败 — 可能 token 永久失效，等对局自然结束
+                            if self._match1023_count >= 3:
+                                # 已经试了 3 轮，每轮内部又重试了多次，大概率是死局
+                                # 等足够长时间让对局超时结束（一局最长约 20 分钟）
+                                logger.error("重连多次失败，等待 5 分钟后重试（等对局自然结束）...")
+                                await asyncio.sleep(300)
+                            else:
+                                wait = min(30 * (2 ** (self._match1023_count - 1)), 120)
+                                logger.error(f"重连残留对局也失败，等 {wait} 秒再试...")
+                                await asyncio.sleep(wait)
                             continue
                     if not success:
                         logger.error("匹配失败，等待重试...")
