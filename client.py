@@ -691,17 +691,26 @@ class MajsoulClient:
             f"匹配成功: uuid={msg.game_uuid[:30]}... "
             f"token={msg.connect_token[:16]}... game_url={msg.game_url}"
         )
-        await self._connect_game_server(
-            msg.game_url, msg.connect_token, msg.game_uuid
-        )
+        try:
+            await self._connect_game_server(
+                msg.game_url, msg.connect_token, msg.game_uuid
+            )
+        except Exception as e:
+            logger.error(f"匹配成功后连接对局服务器失败: {e}")
+            # 设置断线信号，让主循环走重连流程
+            self._game_disconnected.set()
 
     async def _on_room_game_start(self, data: bytes) -> None:
         """友人房对局开始 — 连接对局服务器"""
         msg = pb.NotifyRoomGameStart()
         msg.ParseFromString(data)
-        await self._connect_game_server(
-            msg.game_url, msg.connect_token, msg.game_uuid
-        )
+        try:
+            await self._connect_game_server(
+                msg.game_url, msg.connect_token, msg.game_uuid
+            )
+        except Exception as e:
+            logger.error(f"友人房连接对局服务器失败: {e}")
+            self._game_disconnected.set()
 
     async def _connect_game_server(self, game_url: str, connect_token: str,
                                     game_uuid: str) -> None:
@@ -738,8 +747,9 @@ class MajsoulClient:
             
             logger.info(f"连接对局服务器: {ws_url} (game_url={game_url})")
 
-            # 关闭旧的 game channel
+            # 关闭旧的 game channel — 先注销断线回调，防止触发虚假的断线重连
             if self._game_channel:
+                self._game_channel._on_disconnect_cb = None  # 禁止旧 channel 触发断线
                 try:
                     await self._game_channel.close()
                 except Exception:
