@@ -83,6 +83,7 @@ class MajsoulClient:
         self._password: str = ""
         self._last_connect_token: str = ""
         self._last_game_uuid: str = ""
+        self._server_location: str = ""  # game-gateway 路径后缀 (e.g. "zone")
         self._game_disconnected = asyncio.Event()  # game server 断线信号
         self._game_state = ConnectionState.IDLE  # 对局状态（替代旧的 _in_game bool）
         self._connect_lock = asyncio.Lock()  # 防止并发连接 game server
@@ -374,7 +375,8 @@ class MajsoulClient:
             self._pending_reconnect = None
             connect_token = info["connect_token"]
             game_uuid = info["game_uuid"]
-            logger.info("尝试重连登录时的残留对局...")
+            self._server_location = info.get("location", "")
+            logger.info(f"尝试重连登录时的残留对局... location={self._server_location!r}")
         else:
             # 主动查询
             gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
@@ -383,7 +385,8 @@ class MajsoulClient:
             if game_info.get("connect_token"):
                 connect_token = game_info["connect_token"]
                 game_uuid = game_info["game_uuid"]
-                logger.info(f"🔄 发现残留对局: {game_uuid[:30]}... token={connect_token[:16]}...")
+                self._server_location = game_info.get("location", "")
+                logger.info(f"🔄 发现残留对局: {game_uuid[:30]}... token={connect_token[:16]}... location={self._server_location!r}")
 
         if not connect_token:
             return False
@@ -833,8 +836,11 @@ class MajsoulClient:
         msg.ParseFromString(data)
         logger.info(
             f"匹配成功: uuid={msg.game_uuid} "
-            f"token={msg.connect_token} game_url={msg.game_url}"
+            f"token={msg.connect_token} game_url={msg.game_url} "
+            f"location={msg.location!r}"
         )
+        # 保存 server_location 用于 game-gateway 路径选择
+        self._server_location = msg.location or ""
         try:
             await self._connect_game_server(
                 msg.game_url, msg.connect_token, msg.game_uuid
@@ -906,7 +912,12 @@ class MajsoulClient:
         res = None  # authGame 成功的响应
         
         for route_idx, route_base in enumerate(route_bases):
-            ws_url = f'{route_base}/game-gateway'
+            # server_location 决定 game-gateway 路径后缀
+            # 空/无 → /game-gateway, "zone" → /game-gateway-zone
+            gw_path = "game-gateway"
+            if self._server_location:
+                gw_path = f"game-gateway-{self._server_location}"
+            ws_url = f'{route_base}/{gw_path}'
             
             if route_idx > 0:
                 logger.info(f"🔄 切换 route 节点重试 ({route_idx + 1}/{len(route_bases)}): {route_base}")
