@@ -57,6 +57,11 @@ class MSRPCChannel:
         self._ws = await websockets.connect(
             self._endpoint,
             origin=ms_host,
+            additional_headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/122.0.0.0 Safari/537.36",
+            },
             ping_interval=None,  # 禁用内建 ping — 雀魂服务器不一定回 pong
             ping_timeout=None,   # 用应用层心跳 (client.heartbeat_loop) 代替
         )

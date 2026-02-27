@@ -117,7 +117,13 @@ class MajsoulClient:
 
     async def connect(self) -> None:
         """连接到雀魂服务器"""
-        async with aiohttp.ClientSession() as session:
+        _http_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/122.0.0.0 Safari/537.36",
+            "Referer": "https://game.maj-soul.com/",
+        }
+        async with aiohttp.ClientSession(headers=_http_headers) as session:
             # 获取版本信息
             async with session.get(f"{MS_HOST}/1/version.json") as res:
                 version_info = await res.json()
