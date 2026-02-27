@@ -77,6 +77,7 @@ class MajsoulClient:
         self._game_disconnected = asyncio.Event()  # game server 断线信号
         self._in_game: bool = False  # 是否在对局中
         self._connect_lock = asyncio.Lock()  # 防止并发连接 game server
+        self._lobby_lock = asyncio.Lock()    # 防止并发重连 lobby
 
     # ─── 连接 ─────────────────────────────────────
 
@@ -145,13 +146,17 @@ class MajsoulClient:
         logger.info("连接成功")
 
     async def close(self) -> None:
-        """关闭连接（先 logout 再断开，避免 1003）"""
-        if self._game_channel:
-            try:
-                await self._game_channel.close()
-            except Exception:
-                pass
-            self._game_channel = None
+        """关闭连接（先 logout 再断开，避免 1003）
+        
+        使用 _connect_lock 防止在 game server 连接过程中被关闭。
+        """
+        async with self._connect_lock:
+            if self._game_channel:
+                try:
+                    await self._game_channel.close()
+                except Exception:
+                    pass
+                self._game_channel = None
 
         if self.channel:
             try:
@@ -170,37 +175,45 @@ class MajsoulClient:
         """重新连接 lobby（断线后恢复）
         
         关闭旧 lobby 连接，重新 connect + login，保留 game channel。
+        使用 _lobby_lock 防止并发重连（heartbeat + auto_reconnect 可能同时触发）。
         Returns:
             True 如果重连成功
         """
-        logger.info("🔄 重连 lobby...")
-        # 只关闭 lobby，保留 game channel
-        old_game_channel = self._game_channel
-        old_fast_test = self.fast_test
-        
-        if self.channel:
+        if self._lobby_lock.locked():
+            logger.info("lobby 重连已在进行中，等待完成...")
+            async with self._lobby_lock:
+                # 拿到锁时已经被前一个重连完成了，检查连接状态
+                return self.channel is not None and self.channel.is_connected
+
+        async with self._lobby_lock:
+            logger.info("🔄 重连 lobby...")
+            # 只关闭 lobby，保留 game channel
+            old_game_channel = self._game_channel
+            old_fast_test = self.fast_test
+            
+            if self.channel:
+                try:
+                    await self.channel.close()
+                except Exception:
+                    pass
+            
             try:
-                await self.channel.close()
-            except Exception:
-                pass
-        
-        try:
-            await self.connect()
-            ok = await self.login(self._username, self._password)
-            if ok:
-                self._register_hooks()
-                # 恢复 game channel 引用
-                if old_game_channel and old_game_channel.is_connected:
-                    self._game_channel = old_game_channel
-                    self.fast_test = old_fast_test
-                logger.info("✅ lobby 重连成功")
-                return True
-            else:
-                logger.error("lobby 重连登录失败")
+                await self.connect()
+                ok = await self.login(self._username, self._password)
+                if ok:
+                    self._register_hooks()
+                    # 恢复 game channel 引用
+                    if old_game_channel and old_game_channel.is_connected:
+                        self._game_channel = old_game_channel
+                        self.fast_test = old_fast_test
+                    logger.info("✅ lobby 重连成功")
+                    return True
+                else:
+                    logger.error("lobby 重连登录失败")
+                    return False
+            except Exception as e:
+                logger.error(f"lobby 重连失败: {e}")
                 return False
-        except Exception as e:
-            logger.error(f"lobby 重连失败: {e}")
-            return False
 
     # ─── 登录 ─────────────────────────────────────
 
@@ -947,7 +960,7 @@ class MajsoulClient:
         logger.info(f"对局认证成功，座位: {seat}")
 
         # 通知事件处理器
-        for handler in self._event_handlers.get("game_start", []):
+        for handler in list(self._event_handlers.get("game_start", [])):
             await handler(seat, res)
 
         # 进入对局 — 如果是重连，会返回 GameRestore
@@ -956,7 +969,7 @@ class MajsoulClient:
 
         if enter_res.is_end:
             logger.info("对局已结束")
-            for handler in self._event_handlers.get("game_end", []):
+            for handler in list(self._event_handlers.get("game_end", [])):
                 await handler(b"")
             return
 
@@ -964,7 +977,7 @@ class MajsoulClient:
             # 断线重连 — 重放 actions 恢复状态
             actions = enter_res.game_restore.actions
             logger.info(f"🔄 断线重连，重放 {len(actions)} 个动作恢复状态")
-            for handler in self._event_handlers.get("game_restore", []):
+            for handler in list(self._event_handlers.get("game_restore", [])):
                 await handler(enter_res.game_restore)
         else:
             logger.info("已进入对局")
@@ -987,12 +1000,12 @@ class MajsoulClient:
 
         logger.debug(f"ActionPrototype: {action_name} ({len(action_data)} bytes)")
 
-        for handler in self._event_handlers.get("action", []):
+        for handler in list(self._event_handlers.get("action", [])):
             await handler(action_name, action_data)
 
     async def _on_game_end(self, data: bytes) -> None:
         """对局结束"""
-        for handler in self._event_handlers.get("game_end", []):
+        for handler in list(self._event_handlers.get("game_end", [])):
             await handler(data)
 
     # ─── 对局操作 ──────────────────────────────────
