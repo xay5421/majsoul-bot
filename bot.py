@@ -69,6 +69,7 @@ class MajsoulBot:
         self._game_end_event = asyncio.Event()
         self._is_mortal = (ai_type == "mortal")
         self._discard_confirmed = False  # 服务端已确认出牌（防止竞争）
+        self._action_lock = asyncio.Lock()  # action handler 串行锁
         self._live_handler = None  # 当前局的 live log handler
         # 装弱：第一名时前 N 步用 q_values 带权随机
         self._nerf_turns = getattr(self.config.ai, 'nerf_turns', 0)
@@ -428,7 +429,15 @@ class MajsoulBot:
         logger.info(f"对局开始! 座位={seat}")
 
     async def _on_game_restore(self, game_restore) -> None:
-        """断线重连 — 从 actions 恢复游戏状态"""
+        """断线重连 — 从 actions 恢复游戏状态
+        
+        使用 _action_lock 串行化，防止和实时 action 并发。
+        """
+        async with self._action_lock:
+            await self._on_game_restore_inner(game_restore)
+
+    async def _on_game_restore_inner(self, game_restore) -> None:
+        """_on_game_restore 的实际实现（在 action_lock 内）"""
         if not self.game_state:
             logger.warning("重连但没有游戏状态，无法恢复")
             return
@@ -685,32 +694,37 @@ class MajsoulBot:
                 raise
 
     async def _on_action(self, action_name: str, data: bytes) -> None:
-        """处理对局中的操作 (data 已经过 XOR 解密)"""
-        if not self.game_state:
-            logger.warning("收到操作但没有游戏状态")
-            return
+        """处理对局中的操作 (data 已经过 XOR 解密)
+        
+        使用 _action_lock 串行化，因为 MSRPCChannel 用 create_task
+        分发 hook，多个 action 可能并发到达。
+        """
+        async with self._action_lock:
+            if not self.game_state:
+                logger.warning("收到操作但没有游戏状态")
+                return
 
-        try:
-            if action_name == "ActionNewRound":
-                await self._handle_new_round(data)
-            elif action_name == "ActionDealTile":
-                await self._handle_deal_tile(data)
-            elif action_name == "ActionDiscardTile":
-                await self._handle_discard_tile(data)
-            elif action_name == "ActionChiPengGang":
-                await self._handle_chi_peng_gang(data)
-            elif action_name == "ActionAnGangAddGang":
-                await self._handle_angang_addgang(data)
-            elif action_name == "ActionHule":
-                await self._handle_hule(data)
-            elif action_name == "ActionNoTile":
-                await self._handle_notile(data)
-            elif action_name == "ActionLiuJu":
-                await self._handle_liuju(data)
-            else:
-                logger.debug(f"未处理的操作: {action_name}")
-        except Exception as e:
-            logger.exception(f"处理操作 {action_name} 出错: {e}")
+            try:
+                if action_name == "ActionNewRound":
+                    await self._handle_new_round(data)
+                elif action_name == "ActionDealTile":
+                    await self._handle_deal_tile(data)
+                elif action_name == "ActionDiscardTile":
+                    await self._handle_discard_tile(data)
+                elif action_name == "ActionChiPengGang":
+                    await self._handle_chi_peng_gang(data)
+                elif action_name == "ActionAnGangAddGang":
+                    await self._handle_angang_addgang(data)
+                elif action_name == "ActionHule":
+                    await self._handle_hule(data)
+                elif action_name == "ActionNoTile":
+                    await self._handle_notile(data)
+                elif action_name == "ActionLiuJu":
+                    await self._handle_liuju(data)
+                else:
+                    logger.debug(f"未处理的操作: {action_name}")
+            except Exception as e:
+                logger.exception(f"处理操作 {action_name} 出错: {e}")
 
     async def _handle_new_round(self, data: bytes) -> None:
         """新一局 — 使用 ActionNewRound (不是 RecordNewRound)"""
@@ -1113,40 +1127,41 @@ class MajsoulBot:
             logger.debug(f"confirm_new_round: {e}")
 
     async def _on_game_end(self, data: bytes) -> None:
-        """对局结束"""
-        self._in_game = False
+        """对局结束 — 使用 _action_lock 防止和 action handler 并发"""
+        async with self._action_lock:
+            self._in_game = False
 
-        try:
-            msg = pb.NotifyGameEndResult()
-            msg.ParseFromString(data)
-            d = MessageToDict(msg, preserving_proto_field_name=True)
-            players = d.get('result', {}).get('players', [])
-            scores = [0] * (self.game_state.player_count if self.game_state else 4)
-            for p in players:
-                seat = p.get('seat', 0)
-                if seat < len(scores):
-                    scores[seat] = p.get('total_point', 0)
-            display.show_game_end(self.game_state, scores)
-            # 获取最后一局的原始分数（来自 game_state）
-            raw_scores = None
-            if self.game_state and hasattr(self.game_state, 'scores'):
-                raw_scores = list(self.game_state.scores)
-            # 写入实况日志 - scores 是 uma 调整后的最终分数
-            ranked = sorted(enumerate(scores), key=lambda x: -x[1])
-            lines = ["🏁 对局结束!"]
-            if raw_scores:
-                lines.append(f"  原始分数: " + " / ".join(f"P{i}:{raw_scores[i]}" for i in range(len(raw_scores))))
-            lines.append(f"  最终得点 (uma调整后):")
-            for rank, (i, sc) in enumerate(ranked):
-                me = " ← 自家" if self.game_state and i == self.game_state.seat else ""
-                lines.append(f"    第{rank+1}名 P{i}: {sc:+d}{me}")
-            self._live("\n         │ ".join(lines))
-        except Exception:
-            logger.info("🏁 对局结束!")
+            try:
+                msg = pb.NotifyGameEndResult()
+                msg.ParseFromString(data)
+                d = MessageToDict(msg, preserving_proto_field_name=True)
+                players = d.get('result', {}).get('players', [])
+                scores = [0] * (self.game_state.player_count if self.game_state else 4)
+                for p in players:
+                    seat = p.get('seat', 0)
+                    if seat < len(scores):
+                        scores[seat] = p.get('total_point', 0)
+                display.show_game_end(self.game_state, scores)
+                # 获取最后一局的原始分数（来自 game_state）
+                raw_scores = None
+                if self.game_state and hasattr(self.game_state, 'scores'):
+                    raw_scores = list(self.game_state.scores)
+                # 写入实况日志 - scores 是 uma 调整后的最终分数
+                ranked = sorted(enumerate(scores), key=lambda x: -x[1])
+                lines = ["🏁 对局结束!"]
+                if raw_scores:
+                    lines.append(f"  原始分数: " + " / ".join(f"P{i}:{raw_scores[i]}" for i in range(len(raw_scores))))
+                lines.append(f"  最终得点 (uma调整后):")
+                for rank, (i, sc) in enumerate(ranked):
+                    me = " ← 自家" if self.game_state and i == self.game_state.seat else ""
+                    lines.append(f"    第{rank+1}名 P{i}: {sc:+d}{me}")
+                self._live("\n         │ ".join(lines))
+            except Exception:
+                logger.info("🏁 对局结束!")
 
-        self.ai.on_game_end({})
-        self._stop_game_live_log()
-        self._game_end_event.set()
+            self.ai.on_game_end({})
+            self._stop_game_live_log()
+            self._game_end_event.set()
 
     # ─── 决策 ──────────────────────────────────────
 
