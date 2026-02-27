@@ -1,5 +1,6 @@
 """雀魂 WebSocket 客户端 — 连接、登录、匹配、对局操作"""
 import asyncio
+import enum
 import hashlib
 import hmac
 import logging
@@ -19,6 +20,14 @@ from codec import decode as xor_decode
 class MatchError1023(Exception):
     """匹配失败：账号仍在对局中 (error code 1023)"""
     pass
+
+
+class ConnectionState(enum.Enum):
+    """对局连接状态"""
+    IDLE = "idle"                  # 未在对局
+    CONNECTING = "connecting"      # 正在连接 game server
+    IN_GAME = "in_game"           # 对局进行中
+    RECONNECTING = "reconnecting"  # 对局中断线重连中
 
 logger = logging.getLogger("majsoul.client")
 
@@ -75,9 +84,34 @@ class MajsoulClient:
         self._last_connect_token: str = ""
         self._last_game_uuid: str = ""
         self._game_disconnected = asyncio.Event()  # game server 断线信号
-        self._in_game: bool = False  # 是否在对局中
+        self._game_state = ConnectionState.IDLE  # 对局状态（替代旧的 _in_game bool）
         self._connect_lock = asyncio.Lock()  # 防止并发连接 game server
         self._lobby_lock = asyncio.Lock()    # 防止并发重连 lobby
+        self._background_tasks: set[asyncio.Task] = set()  # 集中管理后台任务
+
+    @property
+    def _in_game(self) -> bool:
+        """兼容属性：是否在对局中"""
+        return self._game_state == ConnectionState.IN_GAME
+
+    @_in_game.setter
+    def _in_game(self, value: bool) -> None:
+        """兼容 setter：True→IN_GAME, False→IDLE"""
+        self._game_state = ConnectionState.IN_GAME if value else ConnectionState.IDLE
+
+    def create_background_task(self, coro, *, name: str = None) -> asyncio.Task:
+        """创建后台任务并注册到集中管理集合"""
+        task = asyncio.create_task(coro, name=name)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    async def cancel_all_background_tasks(self) -> None:
+        """取消所有后台任务并等待完成"""
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
     # ─── 连接 ─────────────────────────────────────
 
@@ -150,6 +184,9 @@ class MajsoulClient:
         
         使用 _connect_lock 防止在 game server 连接过程中被关闭。
         """
+        # 先取消所有后台任务
+        await self.cancel_all_background_tasks()
+
         async with self._connect_lock:
             if self._game_channel:
                 try:
@@ -501,6 +538,7 @@ class MajsoulClient:
         Returns:
             True 如果重连成功
         """
+        self._game_state = ConnectionState.RECONNECTING
         for attempt in range(1, max_retries + 1):
             logger.info(f"🔄 尝试重连对局 ({attempt}/{max_retries})...")
             try:
@@ -540,6 +578,7 @@ class MajsoulClient:
                 await asyncio.sleep(retry_interval)
         
         logger.error(f"重连失败，已尝试 {max_retries} 次")
+        self._game_state = ConnectionState.IDLE
         return False
 
     # ─── 心跳 ─────────────────────────────────────
@@ -832,8 +871,11 @@ class MajsoulClient:
         self._last_connect_token = connect_token
         self._last_game_uuid = game_uuid
         self._game_disconnected.clear()
+        self._game_state = ConnectionState.CONNECTING
         
         import re
+        if not self.channel:
+            raise RuntimeError("lobby not connected")
         m = re.match(r'(wss://[^/]+)', self.channel._endpoint)
         current_route = m.group(1) if m else 'wss://route-5.maj-soul.com:443'
         
@@ -926,6 +968,7 @@ class MajsoulClient:
 
                 # 认证成功！此时才替换 self.fast_test
                 self.fast_test = game_fast_test
+                self._game_state = ConnectionState.IN_GAME
                 if route_idx > 0:
                     logger.info(f"✅ 切换到 route {route_base} 后 authGame 成功!")
                 self._game_disconnected.clear()
@@ -936,6 +979,7 @@ class MajsoulClient:
                 continue
         else:
             # 所有 route 都失败
+            self._game_state = ConnectionState.IDLE
             if last_error and "code=2" in str(last_error):
                 logger.error(f"所有 {len(route_bases)} 个 route 节点 authGame 均 code=2")
             raise last_error or RuntimeError("game server 连接失败")
@@ -1005,6 +1049,7 @@ class MajsoulClient:
 
     async def _on_game_end(self, data: bytes) -> None:
         """对局结束"""
+        self._game_state = ConnectionState.IDLE
         for handler in list(self._event_handlers.get("game_end", [])):
             await handler(data)
 

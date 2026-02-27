@@ -155,8 +155,10 @@ class MajsoulBot:
             self.client.on("game_restore", self._on_game_restore)
             await self.client.start_event_loop()
 
-            # 启动心跳
-            heartbeat_task = asyncio.create_task(self.client.heartbeat_loop())
+            # 启动心跳（注册到集中任务管理）
+            heartbeat_task = self.client.create_background_task(
+                self.client.heartbeat_loop(), name="heartbeat"
+            )
             self._heartbeat_task = heartbeat_task
 
             # 检查并重连残留对局
