@@ -177,8 +177,9 @@ class MajsoulBot:
                     logger.warning(f"刷新段位失败: {e}")
                 logger.info(f"残留对局处理完毕: _running={self._running}, max_games={self.config.run.max_games}")
                 if self._running and self.config.run.max_games != 1:
-                    interval = self.config.run.game_interval
-                    logger.info(f"等待 {interval} 秒后继续...")
+                    base = self.config.run.game_interval
+                    interval = base + random.uniform(-5, 10)
+                    logger.info(f"等待 {interval:.0f} 秒后继续...")
                     await asyncio.sleep(interval)
             else:
                 # 重连失败，可能 token 永久失效
@@ -332,8 +333,9 @@ class MajsoulBot:
                     logger.warning(f"刷新段位失败: {e}")
 
                 if self._running and max_games != 1:
-                    interval = self.config.run.game_interval
-                    logger.info(f"等待 {interval} 秒后继续...")
+                    base = self.config.run.game_interval
+                    interval = base + random.uniform(-5, 10)
+                    logger.info(f"等待 {interval:.0f} 秒后继续...")
                     await asyncio.sleep(interval)
 
             heartbeat_task.cancel()

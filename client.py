@@ -1071,8 +1071,20 @@ class MajsoulClient:
             await handler(action_name, action_data)
 
     async def _on_game_end(self, data: bytes) -> None:
-        """对局结束"""
+        """对局结束 — 清理 game channel 防止下局 authGame code=2"""
         self._game_state = ConnectionState.IDLE
+
+        # 主动关闭上一局的 game server 连接
+        # 否则服务端看到旧连接还在，会拒绝新的 authGame (code=2)
+        if self._game_channel:
+            self._game_channel._on_disconnect_cb = None  # 防止触发虚假断线重连
+            try:
+                await self._game_channel.close()
+            except Exception:
+                pass
+            self._game_channel = None
+        self.fast_test = None
+
         for handler in list(self._event_handlers.get("game_end", [])):
             await handler(data)
 
