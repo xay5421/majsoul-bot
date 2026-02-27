@@ -183,6 +183,7 @@ class MajsoulClient:
         """关闭连接（先 logout 再断开，避免 1003）
         
         使用 _connect_lock 防止在 game server 连接过程中被关闭。
+        使用 _lobby_lock 防止在 lobby 重连过程中被关闭。
         """
         # 先取消所有后台任务
         await self.cancel_all_background_tasks()
@@ -195,18 +196,19 @@ class MajsoulClient:
                     pass
                 self._game_channel = None
 
-        if self.channel:
-            try:
-                if self.lobby and self.access_token:
-                    await self.lobby.logout(pb.ReqLogout())
-                    logger.info("已登出")
-            except Exception as e:
-                logger.debug(f"登出异常 (可忽略): {e}")
-            try:
-                await self.channel.close()
-            except Exception:
-                pass
-            logger.info("连接已关闭")
+        async with self._lobby_lock:
+            if self.channel:
+                try:
+                    if self.lobby and self.access_token:
+                        await self.lobby.logout(pb.ReqLogout())
+                        logger.info("已登出")
+                except Exception as e:
+                    logger.debug(f"登出异常 (可忽略): {e}")
+                try:
+                    await self.channel.close()
+                except Exception:
+                    pass
+                logger.info("连接已关闭")
 
     async def reconnect_lobby(self) -> bool:
         """重新连接 lobby（断线后恢复）
@@ -857,6 +859,13 @@ class MajsoulClient:
         使用 _connect_lock 防止并发调用（匹配回调 + 重连可能同时触发）。
         """
         async with self._connect_lock:
+            # 防止重复连接：如果已在对局或正在连接中，跳过
+            if self._game_state in (ConnectionState.IN_GAME, ConnectionState.CONNECTING):
+                logger.warning(
+                    f"跳过连接: 当前状态={self._game_state.value}, "
+                    f"token={connect_token[:16]}..."
+                )
+                return
             await self._connect_game_server_inner(game_url, connect_token, game_uuid)
 
     async def _connect_game_server_inner(self, game_url: str, connect_token: str,
@@ -1008,11 +1017,17 @@ class MajsoulClient:
             await handler(seat, res)
 
         # 进入对局 — 如果是重连，会返回 GameRestore
-        enter_req = pb.ReqCommon()
-        enter_res = await self.fast_test.enter_game(enter_req)
+        try:
+            enter_req = pb.ReqCommon()
+            enter_res = await self.fast_test.enter_game(enter_req)
+        except Exception as e:
+            logger.error(f"enter_game 失败: {e}")
+            self._game_state = ConnectionState.IDLE
+            raise
 
         if enter_res.is_end:
             logger.info("对局已结束")
+            self._game_state = ConnectionState.IDLE
             for handler in list(self._event_handlers.get("game_end", [])):
                 await handler(b"")
             return
