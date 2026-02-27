@@ -478,11 +478,8 @@ class MajsoulClient:
                 # 确保 lobby 连接还在
                 if not self.channel or not self.channel.is_connected:
                     logger.info("大厅连接断开，重新连接...")
-                    await self.close()
-                    await asyncio.sleep(2)
-                    await self.connect()
-                    await self.login(self._username, self._password)
-                    self._register_hooks()
+                    if not await self.reconnect_lobby():
+                        continue
                 
                 gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
                 gd = MessageToDict(gi, preserving_proto_field_name=True)
