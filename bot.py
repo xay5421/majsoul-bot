@@ -187,7 +187,7 @@ class MajsoulBot:
                     logger.warning("残留对局仍在，token 已失效，等待对局自然结束...")
                     self._live("⏳ 残留对局 token 失效，等待自然结束...")
                     cleared = await self.client.wait_for_residual_game_to_end(
-                        poll_interval=30, timeout=1800
+                        poll_interval=15, timeout=900
                     )
                     if not cleared:
                         logger.warning("等待残留对局超时，重新登录检查...")
@@ -200,9 +200,9 @@ class MajsoulBot:
                             gi2 = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
                             gd2 = MessageToDict(gi2, preserving_proto_field_name=True)
                             if gd2.get("game_info", {}).get("connect_token"):
-                                logger.error("重新登录后对局仍在，退出")
-                                return
-                            logger.info("重新登录后对局已结束，继续")
+                                logger.warning("重新登录后对局仍在（可能是幽灵对局），强制进入主循环尝试匹配")
+                            else:
+                                logger.info("重新登录后对局已结束，继续")
                         except Exception as e:
                             logger.error(f"重新登录失败: {e}，退出")
                             return
@@ -255,7 +255,7 @@ class MajsoulBot:
                                 logger.error("重连多次失败，轮询等待对局自然结束...")
                                 self._live("⏳ 残留对局无法重连，等待自然结束...")
                                 cleared = await self.client.wait_for_residual_game_to_end(
-                                    poll_interval=30, timeout=1800
+                                    poll_interval=15, timeout=900
                                 )
                                 if cleared:
                                     self._match1023_count = 0
@@ -272,9 +272,9 @@ class MajsoulBot:
                                         gi2 = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
                                         gd2 = MessageToDict(gi2, preserving_proto_field_name=True)
                                         if gd2.get("game_info", {}).get("connect_token"):
-                                            logger.error("重新登录后对局仍在，退出")
-                                            break
-                                        logger.info("重新登录后对局已结束，恢复匹配")
+                                            logger.warning("重新登录后对局仍在（幽灵对局），重置计数继续匹配")
+                                        else:
+                                            logger.info("重新登录后对局已结束，恢复匹配")
                                         self._match1023_count = 0
                                         continue
                                     except Exception as e:

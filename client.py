@@ -119,6 +119,13 @@ class MajsoulClient:
                 raise ConnectionError("所有路由节点不可用")
             
             routes = route_data["data"]["routes"]
+            # 保存所有 route 节点，供 game-gateway 轮换使用
+            self._all_routes = []
+            for r in routes:
+                d = r["domain"]
+                s = "wss" if r.get("ssl", True) else "ws"
+                self._all_routes.append(f"{s}://{d}")
+            
             # 选一个空闲的路由
             idle_routes = [r for r in routes if r["state"] == "idle"]
             if not idle_routes:
@@ -803,7 +810,12 @@ class MajsoulClient:
 
     async def _connect_game_server_inner(self, game_url: str, connect_token: str,
                                           game_uuid: str) -> None:
-        """_connect_game_server 的实际实现（在锁内调用）"""
+        """_connect_game_server 的实际实现（在锁内调用）
+        
+        策略：先用当前 lobby 的 route 节点连 game-gateway。
+        如果 authGame code=2（token 被拒），轮换所有已知 route 节点重试，
+        因为不同 route 节点可能路由到不同的 game server。
+        """
         # 保存连接信息用于重连
         self._last_connect_token = connect_token
         self._last_game_uuid = game_uuid
@@ -811,21 +823,29 @@ class MajsoulClient:
         
         import re
         m = re.match(r'(wss://[^/]+)', self.channel._endpoint)
-        route_base = m.group(1) if m else 'wss://route-5.maj-soul.com:443'
-        ws_url = f'{route_base}/game-gateway'
-
-        # 连接 + 认证，最多重试 3 次
+        current_route = m.group(1) if m else 'wss://route-5.maj-soul.com:443'
+        
+        # 构建尝试列表：当前 route 优先，然后其他 route 节点
+        route_bases = [current_route]
+        for r in getattr(self, '_all_routes', []):
+            if r != current_route and r not in route_bases:
+                route_bases.append(r)
+        
         last_error = None
-        for attempt in range(1, 4):
-            if attempt > 1:
-                logger.info(f"🔄 game server 连接重试 ({attempt}/3)...")
-                await asyncio.sleep(2)
+        res = None  # authGame 成功的响应
+        
+        for route_idx, route_base in enumerate(route_bases):
+            ws_url = f'{route_base}/game-gateway'
+            
+            if route_idx > 0:
+                logger.info(f"🔄 切换 route 节点重试 ({route_idx + 1}/{len(route_bases)}): {route_base}")
+                await asyncio.sleep(1)
             
             logger.info(f"连接对局服务器: {ws_url} (game_url={game_url})")
 
             # 关闭旧的 game channel — 先注销断线回调，防止触发虚假的断线重连
             if self._game_channel:
-                self._game_channel._on_disconnect_cb = None  # 禁止旧 channel 触发断线
+                self._game_channel._on_disconnect_cb = None
                 try:
                     await self._game_channel.close()
                 except Exception:
@@ -883,15 +903,18 @@ class MajsoulClient:
                     logger.error(
                         f"对局认证失败: code={error_code} "
                         f"token={connect_token} "
-                        f"session={self.access_token}"
+                        f"session={self.access_token} "
+                        f"route={route_base}"
                     )
                     last_error = RuntimeError(f"authGame failed: code={error_code}")
-                    # code=2: token 无效，同一个 token 重试没用，直接跳出
                     if error_code == 2:
-                        break
-                    continue  # 其他错误码可以重试
+                        # code=2: 当前 route 拒绝，尝试下一个 route 节点
+                        continue
+                    continue  # 其他错误码也继续尝试
 
-                # 认证成功，跳出重试循环
+                # 认证成功！
+                if route_idx > 0:
+                    logger.info(f"✅ 切换到 route {route_base} 后 authGame 成功!")
                 self._game_disconnected.clear()
                 break
             except Exception as e:
@@ -899,12 +922,10 @@ class MajsoulClient:
                 last_error = e
                 continue
         else:
-            # 3 次都失败
+            # 所有 route 都失败
+            if last_error and "code=2" in str(last_error):
+                logger.error(f"所有 {len(route_bases)} 个 route 节点 authGame 均 code=2")
             raise last_error or RuntimeError("game server 连接失败")
-
-        # 如果是 code=2 break 出来的，也要抛异常
-        if last_error and "code=2" in str(last_error):
-            raise last_error
 
         res_dict = MessageToDict(res, preserving_proto_field_name=True)
 
