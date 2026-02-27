@@ -172,6 +172,7 @@ class MajsoulBot:
                     logger.info(f"📊 当前段位: {rank} (已完成 {self.games_played} 局)")
                 except Exception as e:
                     logger.warning(f"刷新段位失败: {e}")
+                logger.info(f"残留对局处理完毕: _running={self._running}, max_games={self.config.run.max_games}")
                 if self._running and self.config.run.max_games != 1:
                     interval = self.config.run.game_interval
                     logger.info(f"等待 {interval} 秒后继续...")
@@ -189,12 +190,27 @@ class MajsoulBot:
                         poll_interval=30, timeout=1800
                     )
                     if not cleared:
-                        logger.error("等待残留对局超时，退出")
-                        return
+                        logger.warning("等待残留对局超时，重新登录检查...")
+                        try:
+                            await self.client.close()
+                            await asyncio.sleep(3)
+                            await self.client.connect()
+                            await self.client.login(self.client._username, self.client._password)
+                            self.client._register_hooks()
+                            gi2 = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
+                            gd2 = MessageToDict(gi2, preserving_proto_field_name=True)
+                            if gd2.get("game_info", {}).get("connect_token"):
+                                logger.error("重新登录后对局仍在，退出")
+                                return
+                            logger.info("重新登录后对局已结束，继续")
+                        except Exception as e:
+                            logger.error(f"重新登录失败: {e}，退出")
+                            return
 
             # 主循环
             max_games = self.config.run.max_games
             match_mode = self.config.match.mode
+            logger.info(f"进入主循环: max_games={max_games}, mode={match_mode}, _running={self._running}")
             while self._running:
                 if max_games > 0 and self.games_played >= max_games:
                     logger.info(f"已完成 {self.games_played} 局，停止匹配")
@@ -246,8 +262,24 @@ class MajsoulBot:
                                     logger.info("残留对局已结束，恢复匹配")
                                     continue
                                 else:
-                                    logger.error("等待残留对局超时，退出")
-                                    break
+                                    logger.warning("等待残留对局超时，重新登录检查...")
+                                    try:
+                                        await self.client.close()
+                                        await asyncio.sleep(3)
+                                        await self.client.connect()
+                                        await self.client.login(self.client._username, self.client._password)
+                                        self.client._register_hooks()
+                                        gi2 = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
+                                        gd2 = MessageToDict(gi2, preserving_proto_field_name=True)
+                                        if gd2.get("game_info", {}).get("connect_token"):
+                                            logger.error("重新登录后对局仍在，退出")
+                                            break
+                                        logger.info("重新登录后对局已结束，恢复匹配")
+                                        self._match1023_count = 0
+                                        continue
+                                    except Exception as e:
+                                        logger.error(f"重新登录失败: {e}，退出")
+                                        break
                             else:
                                 wait = min(30 * (2 ** (self._match1023_count - 1)), 120)
                                 logger.error(f"重连残留对局也失败，等 {wait} 秒再试...")
@@ -260,6 +292,33 @@ class MajsoulBot:
 
                 # 等待对局结束（同时监控断线）
                 self._match1023_count = 0  # 成功进入对局，重置计数
+                
+                # 如果还没进入对局（匹配请求已发但还没收到 NotifyMatchGameStart），
+                # 先等待匹配完成，超时则取消重试
+                if not self._in_game:
+                    match_timeout = 120  # 匹配超时 120 秒
+                    logger.info(f"等待匹配完成... (超时 {match_timeout}s)")
+                    elapsed = 0
+                    poll_interval = 5
+                    while (elapsed < match_timeout 
+                           and not self._in_game 
+                           and not self._game_end_event.is_set()
+                           and not self.client._game_disconnected.is_set()):
+                        await asyncio.sleep(poll_interval)
+                        elapsed += poll_interval
+                    if not self._in_game and not self._game_end_event.is_set():
+                        if self.client._game_disconnected.is_set():
+                            logger.warning("匹配后连接对局服务器失败，重试匹配...")
+                            self.client._game_disconnected.clear()
+                        else:
+                            logger.warning(f"匹配超时 ({match_timeout}s)，取消匹配重试...")
+                        try:
+                            await self.client.cancel_match()
+                        except Exception as e:
+                            logger.debug(f"取消匹配失败 (可忽略): {e}")
+                        await asyncio.sleep(3)
+                        continue
+                
                 await self._wait_for_game_end_or_disconnect()
 
                 self.games_played += 1
@@ -297,7 +356,9 @@ class MajsoulBot:
 
     async def _wait_for_game_end_or_disconnect(self) -> None:
         """等待对局结束，同时监听断线并自动重连"""
-        logger.info("等待对局结束...")
+        # 确保断线信号是 clear 状态（防止上一局遗留）
+        self.client._game_disconnected.clear()
+        logger.info(f"等待对局结束... (game_end={self._game_end_event.is_set()}, disconnected={self.client._game_disconnected.is_set()})")
         while not self._game_end_event.is_set():
             game_end_task = asyncio.create_task(self._game_end_event.wait())
             disconnect_task = asyncio.create_task(
@@ -318,7 +379,7 @@ class MajsoulBot:
                 continue
 
             if disconnect_task in done and not self._game_end_event.is_set():
-                logger.warning("⚠️ 对局中途断线，尝试自动重连...")
+                logger.warning(f"⚠️ 对局中途断线，尝试自动重连... (game_end={self._game_end_event.is_set()})")
                 self._live("⚠️ 对局中途断线，尝试重连...")
                 reconnected = await self.client.auto_reconnect_game()
                 if not reconnected:
@@ -328,6 +389,8 @@ class MajsoulBot:
                 self._live("✅ 重连成功，继续对局")
                 continue
 
+            # game_end_task triggered or both triggered
+            logger.info(f"等待循环退出: game_end={game_end_task in done}, disconnect={disconnect_task in done}")
             break
 
     async def _on_game_start(self, seat: int, auth_res) -> None:

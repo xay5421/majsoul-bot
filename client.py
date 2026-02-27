@@ -367,6 +367,7 @@ class MajsoulClient:
                 await self.connect()
                 ok = await self.login(self._username, self._password)
                 if ok:
+                    self._register_hooks()
                     gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
                     gd = MessageToDict(gi, preserving_proto_field_name=True)
                     game_info = gd.get("game_info", {})
@@ -417,12 +418,13 @@ class MajsoulClient:
             
             try:
                 # 确保 lobby 连接还在
-                if not self._channel or not self._channel.is_connected:
+                if not self.channel or not self.channel.is_connected:
                     logger.info("大厅连接断开，重新连接...")
                     await self.close()
                     await asyncio.sleep(2)
                     await self.connect()
                     await self.login(self._username, self._password)
+                    self._register_hooks()
                 
                 gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
                 gd = MessageToDict(gi, preserving_proto_field_name=True)
@@ -847,7 +849,10 @@ class MajsoulClient:
                 # 连接 — 注册断线回调 BEFORE connect，防止连上后瞬断漏掉
                 self._game_channel.on_disconnect(self._on_game_server_disconnect)
 
-                await self._game_channel.connect("https://game.maj-soul.com")
+                await asyncio.wait_for(
+                    self._game_channel.connect("https://game.maj-soul.com"),
+                    timeout=15
+                )
                 logger.info("对局服务器连接成功")
 
                 # 确认连接仍然存活（防止 connect 后瞬断）
