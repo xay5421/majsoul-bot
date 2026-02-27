@@ -1084,6 +1084,7 @@ class MajsoulClient:
     async def _on_game_end(self, data: bytes) -> None:
         """对局结束 — 清理 game channel 防止下局 authGame code=2"""
         self._game_state = ConnectionState.IDLE
+        self._server_location = ""  # 下一局会重新从 NotifyMatchGameStart 获取
 
         # 主动关闭上一局的 game server 连接
         # 否则服务端看到旧连接还在，会拒绝新的 authGame (code=2)
