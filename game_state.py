@@ -141,6 +141,25 @@ class GameState:
             logger.info(f"摸牌: {tile_to_str(self.draw)}")
         logger.info(f"宝牌指示: {tiles_to_str(self.dora_indicators)}")
 
+    def _remove_from_hand(self, tile: str, check_draw: bool = False) -> bool:
+        """从手牌（或摸牌）中安全扣除一张牌，精确匹配优先，赤牌兜底。
+        
+        Returns: True 如果成功扣除
+        """
+        if check_draw and self.draw == tile:
+            self.draw = None
+            return True
+        if tile in self.hand:
+            self.hand.remove(tile)
+            return True
+        # 兜底：赤牌映射 (0m↔5m)
+        norm = normalize_aka(tile)
+        for i, h in enumerate(self.hand):
+            if normalize_aka(h) == norm:
+                self.hand.pop(i)
+                return True
+        return False
+
     def on_draw(self, seat: int, tile: str) -> None:
         """摸牌事件"""
         self.tiles_left -= 1
@@ -170,24 +189,11 @@ class GameState:
         if seat == self.seat:
             self.my_discard_count += 1
             # 自己出牌：从手牌中移除
-            if self.draw == tile:
-                self.draw = None
-            elif tile in self.hand:
-                self.hand.remove(tile)
-            else:
-                # 重连恢复时手牌可能不同步，用赤牌别名再找一次
-                norm = normalize_aka(tile)
-                found = False
-                for i, h in enumerate(self.hand):
-                    if normalize_aka(h) == norm:
-                        self.hand.pop(i)
-                        found = True
-                        break
-                if not found:
-                    logger.debug(
-                        f"出牌 {tile} 不在手牌中 (可能是重连恢复), "
-                        f"手牌: {self.hand}"
-                    )
+            if not self._remove_from_hand(tile, check_draw=True):
+                logger.debug(
+                    f"出牌 {tile} 不在手牌中 (可能是重连恢复), "
+                    f"手牌: {self.hand}"
+                )
             # 如果打的不是摸的牌，把摸的牌加入手牌
             if self.draw is not None:
                 self.hand.append(self.draw)
@@ -218,17 +224,8 @@ class GameState:
         self._visible_tiles.extend(tiles)
 
         if seat == self.seat:
-            # 从手牌中移除副露用到的牌（精确匹配优先，赤牌兜底）
             for t in tiles:
-                if t in self.hand:
-                    self.hand.remove(t)
-                else:
-                    # 兜底：服务端可能发 "5m" 但手牌只有 "0m"，或反过来
-                    norm = normalize_aka(t)
-                    for i, h in enumerate(self.hand):
-                        if normalize_aka(h) == norm:
-                            self.hand.pop(i)
-                            break
+                self._remove_from_hand(t)
             logger.info(
                 f"[巡{self.turn}] {name}: {tiles_to_str(tiles)} | "
                 f"手牌: {tiles_to_str(sort_tiles(self.hand))}"
@@ -246,14 +243,7 @@ class GameState:
 
         if seat == self.seat:
             for t in tiles:
-                if t in self.hand:
-                    self.hand.remove(t)
-                else:
-                    norm = normalize_aka(t)
-                    for i, h in enumerate(self.hand):
-                        if normalize_aka(h) == norm:
-                            self.hand.pop(i)
-                            break
+                self._remove_from_hand(t)
             logger.info(
                 f"[巡{self.turn}] 暗杠: {tiles_to_str(tiles)} | "
                 f"手牌: {tiles_to_str(sort_tiles(self.hand))}"
@@ -264,10 +254,7 @@ class GameState:
     def on_kakan(self, seat: int, tile: str) -> None:
         """加杠事件"""
         if seat == self.seat:
-            if tile in self.hand:
-                self.hand.remove(tile)
-            elif self.draw == tile:
-                self.draw = None
+            self._remove_from_hand(tile, check_draw=True)
         self._visible_tiles.append(tile)
         logger.info(
             f"[巡{self.turn}] 玩家{seat} 加杠: {tile_to_str(tile)}"

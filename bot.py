@@ -195,17 +195,16 @@ class MajsoulBot:
                     if not cleared:
                         logger.warning("等待残留对局超时，重新登录检查...")
                         try:
-                            await self.client.close()
-                            await asyncio.sleep(3)
-                            await self.client.connect()
-                            await self.client.login(self.client._username, self.client._password)
-                            self.client._register_hooks()
-                            gi2 = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
-                            gd2 = MessageToDict(gi2, preserving_proto_field_name=True)
-                            if gd2.get("game_info", {}).get("connect_token"):
-                                logger.warning("重新登录后对局仍在（可能是幽灵对局），强制进入主循环尝试匹配")
+                            if await self.client.reconnect_lobby():
+                                gi2 = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
+                                gd2 = MessageToDict(gi2, preserving_proto_field_name=True)
+                                if gd2.get("game_info", {}).get("connect_token"):
+                                    logger.warning("重新登录后对局仍在（可能是幽灵对局），强制进入主循环尝试匹配")
+                                else:
+                                    logger.info("重新登录后对局已结束，继续")
                             else:
-                                logger.info("重新登录后对局已结束，继续")
+                                logger.error("重新登录失败，退出")
+                                return
                         except Exception as e:
                             logger.error(f"重新登录失败: {e}，退出")
                             return
@@ -267,19 +266,18 @@ class MajsoulBot:
                                 else:
                                     logger.warning("等待残留对局超时，重新登录检查...")
                                     try:
-                                        await self.client.close()
-                                        await asyncio.sleep(3)
-                                        await self.client.connect()
-                                        await self.client.login(self.client._username, self.client._password)
-                                        self.client._register_hooks()
-                                        gi2 = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
-                                        gd2 = MessageToDict(gi2, preserving_proto_field_name=True)
-                                        if gd2.get("game_info", {}).get("connect_token"):
-                                            logger.warning("重新登录后对局仍在（幽灵对局），重置计数继续匹配")
+                                        if await self.client.reconnect_lobby():
+                                            gi2 = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
+                                            gd2 = MessageToDict(gi2, preserving_proto_field_name=True)
+                                            if gd2.get("game_info", {}).get("connect_token"):
+                                                logger.warning("重新登录后对局仍在（幽灵对局），重置计数继续匹配")
+                                            else:
+                                                logger.info("重新登录后对局已结束，恢复匹配")
+                                            self._match1023_count = 0
+                                            continue
                                         else:
-                                            logger.info("重新登录后对局已结束，恢复匹配")
-                                        self._match1023_count = 0
-                                        continue
+                                            logger.error("重新登录失败，退出")
+                                            break
                                     except Exception as e:
                                         logger.error(f"重新登录失败: {e}，退出")
                                         break
