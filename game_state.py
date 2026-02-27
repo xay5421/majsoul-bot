@@ -218,13 +218,17 @@ class GameState:
         self._visible_tiles.extend(tiles)
 
         if seat == self.seat:
-            # 从手牌中移除副露用到的牌
+            # 从手牌中移除副露用到的牌（精确匹配优先，赤牌兜底）
             for t in tiles:
-                norm = normalize_aka(t)
-                for i, h in enumerate(self.hand):
-                    if normalize_aka(h) == norm:
-                        self.hand.pop(i)
-                        break
+                if t in self.hand:
+                    self.hand.remove(t)
+                else:
+                    # 兜底：服务端可能发 "5m" 但手牌只有 "0m"，或反过来
+                    norm = normalize_aka(t)
+                    for i, h in enumerate(self.hand):
+                        if normalize_aka(h) == norm:
+                            self.hand.pop(i)
+                            break
             logger.info(
                 f"[巡{self.turn}] {name}: {tiles_to_str(tiles)} | "
                 f"手牌: {tiles_to_str(sort_tiles(self.hand))}"
@@ -244,6 +248,12 @@ class GameState:
             for t in tiles:
                 if t in self.hand:
                     self.hand.remove(t)
+                else:
+                    norm = normalize_aka(t)
+                    for i, h in enumerate(self.hand):
+                        if normalize_aka(h) == norm:
+                            self.hand.pop(i)
+                            break
             logger.info(
                 f"[巡{self.turn}] 暗杠: {tiles_to_str(tiles)} | "
                 f"手牌: {tiles_to_str(sort_tiles(self.hand))}"
