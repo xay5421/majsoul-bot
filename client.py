@@ -179,13 +179,12 @@ class MajsoulClient:
         Returns:
             True 如果重连成功
         """
-        if self._lobby_lock.locked():
-            logger.info("lobby 重连已在进行中，等待完成...")
-            async with self._lobby_lock:
-                # 拿到锁时已经被前一个重连完成了，检查连接状态
-                return self.channel is not None and self.channel.is_connected
-
         async with self._lobby_lock:
+            # 拿到锁后先检查——可能前一个重连已经完成了
+            if self.channel and self.channel.is_connected:
+                logger.info("lobby 已连接，跳过重连")
+                return True
+
             logger.info("🔄 重连 lobby...")
             # 只关闭 lobby，保留 game channel
             old_game_channel = self._game_channel
@@ -894,8 +893,8 @@ class MajsoulClient:
                     last_error = ConnectionError("game server disconnected immediately")
                     continue
 
-                # 在新 channel 上创建 FastTest 服务
-                self.fast_test = FastTest(self._game_channel)
+                # 创建临时 FastTest（不立即赋给 self，等 auth 成功后再替换）
+                game_fast_test = FastTest(self._game_channel)
 
                 # 认证对局 (需要 session=access_token)
                 req = pb.ReqAuthGame()
@@ -909,7 +908,7 @@ class MajsoulClient:
                     f"session={self.access_token} "
                     f"uuid={game_uuid}"
                 )
-                res = await self.fast_test.auth_game(req)
+                res = await game_fast_test.auth_game(req)
 
                 if res.error and res.error.code:
                     error_code = res.error.code
@@ -925,7 +924,8 @@ class MajsoulClient:
                         continue
                     continue  # 其他错误码也继续尝试
 
-                # 认证成功！
+                # 认证成功！此时才替换 self.fast_test
+                self.fast_test = game_fast_test
                 if route_idx > 0:
                     logger.info(f"✅ 切换到 route {route_base} 后 authGame 成功!")
                 self._game_disconnected.clear()
