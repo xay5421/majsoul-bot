@@ -1164,6 +1164,83 @@ class MajsoulBot:
 
     # ─── 决策 ──────────────────────────────────────
 
+    def _find_operation_index(self, operation: dict, action_type: int,
+                             combination: list[str]) -> int:
+        """从 operation_list 中查找 AI 选择的 combination 对应的 index。
+        
+        服务端 operation_list 里同一个 type 可能有多个 combination 选项，
+        例如吃 5m 时：["3m|4m", "4m|6m", "6m|7m"] 表示三种吃法。
+        每个 pipe 分隔字符串对应 index 0, 1, 2。
+        
+        AI 返回的 combination 格式:
+        - Mortal: 独立牌列表 ["4m", "6m"] (mjai 转换后的 ms 牌名)
+        - ShantenAI: 原始服务端格式 ["3m|4m", "4m|6m"] (总是选第一个)
+        
+        Args:
+            operation: pending_operation dict (含 operation_list)
+            action_type: 操作类型 (2=吃, 3=碰, 4=暗杠, 5=明杠, 6=加杠)
+            combination: AI 选择的牌组合
+            
+        Returns:
+            匹配到的 index，未找到时返回 0
+        """
+        op_list = operation.get("operation_list", [])
+        if not combination:
+            return 0
+        
+        # 检测 AI combination 格式：含 "|" 说明是服务端原始格式 (ShantenAI)
+        # 这种情况总是选第一个，index=0
+        if any("|" in c for c in combination):
+            logger.debug(f"combination 是服务端原始格式，index=0")
+            return 0
+        
+        from tiles import normalize_aka
+        
+        # AI combination 是独立牌列表 (Mortal 格式)
+        # 归一化后排序比较
+        ai_tiles = sorted(normalize_aka(t) for t in combination)
+        
+        # 遍历 operation_list 中同 type 的 combination 选项
+        same_type_idx = 0
+        for op in op_list:
+            if op.get("type") != action_type:
+                continue
+            for combo_str in op.get("combination", []):
+                # 解析 "3m|4m" → ["3m", "4m"]
+                parts = [p for p in combo_str.split("|") if len(p) >= 2 and p[-1] in "mpsz"]
+                server_tiles = sorted(normalize_aka(t) for t in parts)
+                if server_tiles == ai_tiles:
+                    logger.info(
+                        f"✅ 匹配 combination index={same_type_idx}: "
+                        f"AI={combination} ↔ server={combo_str}"
+                    )
+                    return same_type_idx
+                same_type_idx += 1
+        
+        # 归一化未匹配到 — 尝试精确匹配（含赤牌区分）
+        same_type_idx = 0
+        ai_tiles_exact = sorted(combination)
+        for op in op_list:
+            if op.get("type") != action_type:
+                continue
+            for combo_str in op.get("combination", []):
+                parts = [p for p in combo_str.split("|") if len(p) >= 2 and p[-1] in "mpsz"]
+                if sorted(parts) == ai_tiles_exact:
+                    logger.info(
+                        f"✅ 精确匹配 combination index={same_type_idx}: "
+                        f"AI={combination} ↔ server={combo_str}"
+                    )
+                    return same_type_idx
+                same_type_idx += 1
+        
+        logger.warning(
+            f"⚠️ 未匹配到 combination! type={action_type} AI={combination} "
+            f"server_options="
+            f"{[op.get('combination') for op in op_list if op.get('type') == action_type]} "
+            f"→ fallback index=0"
+        )
+        return 0
+
     async def _process_pending_operation(self) -> None:
         """处理待执行的操作"""
         gs = self.game_state
@@ -1212,20 +1289,15 @@ class MajsoulBot:
                 tile = self.ai.decide_discard(gs)
             is_moqie = (tile == gs.draw)
             await self.client.discard_tile(tile, is_riichi=True, moqie=is_moqie)
-        elif action_type in [2, 3, 5]:
-            # 吃碰杠
-            call = {2: "chi", 3: "pon", 5: "kan"}.get(action_type, "pon")
+        elif action_type in [2, 3, 4, 5, 6]:
+            # 吃(2)/碰(3)/暗杠(4)/明杠(5)/加杠(6)
+            call = {2: "chi", 3: "pon", 4: "kan", 5: "kan", 6: "kan"}.get(action_type, "?")
             combination = action.get("combination", [])
+            index = self._find_operation_index(operation, action_type, combination)
             display.show_action_decision(call, display.format_tiles(combination))
             delay = self.human.get_call_delay(call)
             await asyncio.sleep(delay)
-            await self.client.chi_peng_gang(action_type, combination)
-        elif action_type in [4, 6]:
-            # 暗杠/加杠
-            delay = self.human.get_call_delay("kan")
-            await asyncio.sleep(delay)
-            combination = action.get("combination", [])
-            await self.client.chi_peng_gang(action_type, combination)
+            await self.client.chi_peng_gang(action_type, combination, index)
         else:
             logger.warning(f"未知操作类型: {action_type}")
             await asyncio.sleep(self.human.get_skip_delay())
