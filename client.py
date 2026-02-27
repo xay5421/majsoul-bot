@@ -487,7 +487,10 @@ class MajsoulClient:
                     if not await self.reconnect_lobby():
                         continue
                 
-                gi = await self.lobby.fetch_gaming_info(pb.ReqCommon())
+                gi = await asyncio.wait_for(
+                    self.lobby.fetch_gaming_info(pb.ReqCommon()),
+                    timeout=10
+                )
                 gd = MessageToDict(gi, preserving_proto_field_name=True)
                 game_info = gd.get("game_info", {})
                 
@@ -497,9 +500,11 @@ class MajsoulClient:
                 
                 token = game_info["connect_token"]
                 logger.info(f"对局仍在进行: token={token} uuid={game_info.get('game_uuid', '?')}")
+            except asyncio.TimeoutError:
+                logger.warning("查询残留对局超时 (10s)，lobby 可能断了，尝试重连...")
+                await self.reconnect_lobby()
             except Exception as e:
                 logger.warning(f"查询残留对局出错: {e}")
-                # 继续轮询
 
     async def _reconnect_game(self, connect_token: str,
                                game_uuid: str) -> bool:
