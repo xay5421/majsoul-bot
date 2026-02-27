@@ -1049,9 +1049,8 @@ class MajsoulBot:
         # 通知 Mortal 和牌/局结束
         if self._is_mortal:
             for hi in msg.hules:
-                self.ai.send_hora(hi.seat,
-                                  hi.seat if hi.zimo else gs.seat,  # target 简化
-                                  hi.hu_tile)
+                target = hi.seat if hi.zimo else getattr(gs, 'last_discard_seat', gs.seat)
+                self.ai.send_hora(hi.seat, target, hi.hu_tile)
             self.ai.send_end_kyoku()
 
         # 🎉 和牌时发表情
@@ -1355,17 +1354,26 @@ class MajsoulBot:
         # 验证出牌合法性
         full_hand = gs.get_full_hand()
         if tile not in full_hand:
-            logger.warning(f"⚠️ AI 选择的牌 {tile} 不在手牌中! 手牌: {full_hand}")
-            # fallback: 打摸到的牌
-            if gs.draw:
-                tile = gs.draw
-                is_moqie = True
-            elif gs.hand:
-                tile = gs.hand[-1]
-                is_moqie = False
+            # 赤宝牌映射：Mortal 可能返回 "5m" 但手牌只有 "0m"，反之亦然
+            aka_map = {"5m": "0m", "5p": "0p", "5s": "0s",
+                       "0m": "5m", "0p": "5p", "0s": "5s"}
+            alt = aka_map.get(tile)
+            if alt and alt in full_hand:
+                logger.info(f"赤牌映射: {tile} → {alt}")
+                tile = alt
+                is_moqie = (tile == gs.draw)
             else:
-                logger.error("无牌可打!")
-                return
+                logger.warning(f"⚠️ AI 选择的牌 {tile} 不在手牌中! 手牌: {full_hand}")
+                # fallback: 打摸到的牌
+                if gs.draw:
+                    tile = gs.draw
+                    is_moqie = True
+                elif gs.hand:
+                    tile = gs.hand[-1]
+                    is_moqie = False
+                else:
+                    logger.error("无牌可打!")
+                    return
 
         delay = self.human.get_discard_delay(
             is_tsumogiri=is_moqie,

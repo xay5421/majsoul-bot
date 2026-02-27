@@ -99,6 +99,7 @@ class GameState:
         self.riichi_sticks = data.get("liqibang", 0)
         self.turn = 0
         self.my_discard_count = 0
+        self.last_discard_seat = -1  # 最后出牌者（用于荣和 target）
         self.tiles_left = 70 if self.player_count == 4 else 55
         self._visible_tiles = []
         self.pending_operation = None
@@ -157,6 +158,7 @@ class GameState:
     def on_discard(self, seat: int, tile: str, is_draw: bool = False,
                    is_riichi: bool = False) -> None:
         """出牌事件"""
+        self.last_discard_seat = seat  # 记录最后出牌者（用于荣和 target）
         self.turn += 1
         self.players[seat].discards.append(tile)
         self._visible_tiles.append(tile)
