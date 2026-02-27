@@ -141,19 +141,24 @@ class GameState:
             logger.info(f"摸牌: {tile_to_str(self.draw)}")
         logger.info(f"宝牌指示: {tiles_to_str(self.dora_indicators)}")
 
-    def _remove_from_hand(self, tile: str, check_draw: bool = False) -> bool:
+    def _remove_from_hand(self, tile: str, check_draw: bool = True) -> bool:
         """从手牌（或摸牌）中安全扣除一张牌，精确匹配优先，赤牌兜底。
         
+        check_draw 默认 True — draw 为 None 时检查也无副作用。
         Returns: True 如果成功扣除
         """
+        # 精确匹配
         if check_draw and self.draw == tile:
             self.draw = None
             return True
         if tile in self.hand:
             self.hand.remove(tile)
             return True
-        # 兜底：赤牌映射 (0m↔5m)
+        # 赤牌兜底 (0m↔5m)
         norm = normalize_aka(tile)
+        if check_draw and self.draw is not None and normalize_aka(self.draw) == norm:
+            self.draw = None
+            return True
         for i, h in enumerate(self.hand):
             if normalize_aka(h) == norm:
                 self.hand.pop(i)
