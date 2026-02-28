@@ -1068,24 +1068,35 @@ class MajsoulBot:
 
     async def _send_win_emoji(self) -> None:
         """和牌时发送表情庆祝"""
+        await self._send_emoji_for("win")
+
+    async def _send_emoji_for(self, trigger: str) -> None:
+        """通用表情发送，trigger: 'win' | 'riichi'"""
         import random
-        # 读取表情配置
         emoji_cfg = getattr(self.config, 'emoji', None)
         if emoji_cfg is None or not getattr(emoji_cfg, 'enabled', True):
             return
-        if not getattr(emoji_cfg, 'on_win', True):
+
+        if trigger == "win":
+            if not getattr(emoji_cfg, 'on_win', True):
+                return
+            pool = getattr(emoji_cfg, 'win_emojis', [2, 6, 7])
+        elif trigger == "riichi":
+            if not getattr(emoji_cfg, 'on_riichi', True):
+                return
+            pool = getattr(emoji_cfg, 'riichi_emojis', [3, 8])
+        else:
             return
-        
-        win_emojis = getattr(emoji_cfg, 'win_emojis', [2, 6, 7])
-        if not win_emojis:
+
+        if not pool:
             return
-        
-        emo_id = random.choice(win_emojis)
+
+        emo_id = random.choice(pool)
         try:
-            await asyncio.sleep(0.5)  # 稍等一下再发
+            await asyncio.sleep(0.3)
             await self.client.send_emoji(emo_id)
         except Exception as e:
-            logger.debug(f"发送和牌表情失败: {e}")
+            logger.debug(f"发送{trigger}表情失败: {e}")
 
     async def _handle_notile(self, data: bytes) -> None:
         """荒牌流局 — 使用 ActionNoTile"""
@@ -1289,6 +1300,8 @@ class MajsoulBot:
                 tile = self.ai.decide_discard(gs)
             is_moqie = (tile == gs.draw)
             await self.client.discard_tile(tile, is_riichi=True, moqie=is_moqie)
+            # 立直宣言后发表情
+            await self._send_emoji_for("riichi")
         elif action_type in [2, 3, 4, 5, 6]:
             # 吃(2)/碰(3)/暗杠(4)/明杠(5)/加杠(6)
             call = {2: "chi", 3: "pon", 4: "kan", 5: "kan", 6: "kan"}.get(action_type, "?")
