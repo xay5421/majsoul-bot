@@ -913,10 +913,15 @@ class MajsoulClient:
         
         for route_idx, route_base in enumerate(route_bases):
             # server_location 决定 game-gateway 路径后缀
-            # 空/无 → /game-gateway, "zone" → /game-gateway-zone
-            gw_path = "game-gateway"
-            if self._server_location:
-                gw_path = f"game-gateway-{self._server_location}"
+            # 官方 code.js 逻辑:
+            #   location="local" 或 空 → /game-gateway
+            #   location="zone"        → /game-gateway-zone
+            # 注意: "local" 不加后缀！之前误拼成 /game-gateway-local 导致 authGame code=2
+            if self._server_location == "zone":
+                gw_path = "game-gateway-zone"
+            else:
+                gw_path = "game-gateway"
+            logger.info(f"server_location={self._server_location!r} → gw_path={gw_path!r}")
             ws_url = f'{route_base}/{gw_path}'
             
             if route_idx > 0:
