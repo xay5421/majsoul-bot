@@ -1165,6 +1165,9 @@ class MajsoulClient:
         - 基础表情: 1-9 (每个角色都有)
         - 额外表情: 需要解锁 (Character.extra_emoji)
         """
+        if not self.fast_test:
+            logger.debug(f"发送表情跳过: 对局已结束 (fast_test=None), emo_id={emo_id}")
+            return
         import json
         req = pb.ReqBroadcastInGame()
         # content 是 JSON 字符串，包含表情 ID
