@@ -38,6 +38,8 @@ class EmojiConfig:
     enabled: bool = True
     on_win: bool = True           # 和牌时发表情
     win_emojis: list = field(default_factory=lambda: [2, 6, 7])
+    on_riichi: bool = True        # 立直时发表情
+    riichi_emojis: list = field(default_factory=lambda: [3, 8])
 
 
 @dataclass
