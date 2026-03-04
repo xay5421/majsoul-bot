@@ -25,10 +25,15 @@ logger = logging.getLogger("majsoul")
 WIND = ['东', '南', '西', '北']
 
 
-def _shanten_str(tiles: list[str]) -> str:
-    """计算向听数并返回格式化字符串"""
+def _shanten_str(tiles: list[str], num_melds: int = 0) -> str:
+    """计算向听数并返回格式化字符串
+    
+    Args:
+        tiles: 手牌列表（不含副露中的牌）
+        num_melds: 副露数（吃/碰/明杠/暗杠各算 1 个）
+    """
     try:
-        s = calc_shanten(tiles)
+        s = calc_shanten(tiles, num_melds)
         if s == -1:
             return "和了"
         elif s == 0:
@@ -812,7 +817,8 @@ class MajsoulBot:
         display.show_draw(gs, tile)
         # 摸牌后手牌 = gs.hand（已含摸的牌）
         hand_with_draw = list(gs.hand)
-        shanten_info = _shanten_str(hand_with_draw)
+        num_melds = len(gs.players[gs.seat].melds)
+        shanten_info = _shanten_str(hand_with_draw, num_melds)
         self._live(
             f"  摸 {tile_to_str(tile)} "
             f"| 手牌: {tiles_to_str(sort_tiles(gs.hand))} + {tile_to_str(tile)} "
@@ -895,7 +901,7 @@ class MajsoulBot:
         if seat == gs.seat:
             moqie = " (摸切)" if is_draw else ""
             riichi = " [立直]" if is_riichi else ""
-            shanten_info = _shanten_str(gs.hand)
+            shanten_info = _shanten_str(gs.hand, len(gs.players[gs.seat].melds))
             self._live(
                 f"[巡{gs.turn:2d}] 我打: {tile_to_str(tile)}{moqie}{riichi} "
                 f"| 手牌: {tiles_to_str(sort_tiles(gs.hand))} "

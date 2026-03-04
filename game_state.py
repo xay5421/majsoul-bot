@@ -229,8 +229,10 @@ class GameState:
         self._visible_tiles.extend(tiles)
 
         if seat == self.seat:
-            for t in tiles:
-                self._remove_from_hand(t)
+            # 只移除自己手牌中的牌（froms[i] == seat），不移除别人出的那张
+            for i, t in enumerate(tiles):
+                if i < len(froms) and froms[i] == seat:
+                    self._remove_from_hand(t)
             logger.info(
                 f"[巡{self.turn}] {name}: {tiles_to_str(tiles)} | "
                 f"手牌: {tiles_to_str(sort_tiles(self.hand))}"

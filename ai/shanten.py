@@ -46,10 +46,18 @@ def ms_tiles_to_34(tiles: list[str]) -> list[int]:
     )
 
 
-def calc_shanten(tiles: list[str]) -> int:
-    """计算向听数"""
+def calc_shanten(tiles: list[str], num_melds: int = 0) -> int:
+    """计算向听数
+    
+    Args:
+        tiles: 手牌列表（不含副露中的牌）
+        num_melds: 副露数（吃/碰/明杠/暗杠各算 1 个），
+                   有副露时禁用七对子和国士。
+    """
     arr = ms_tiles_to_34(tiles)
     shanten = Shanten()
+    if num_melds > 0:
+        return shanten.calculate_shanten(arr, use_chiitoitsu=False, use_kokushi=False)
     return shanten.calculate_shanten(arr)
 
 

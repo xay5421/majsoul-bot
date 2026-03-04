@@ -89,14 +89,14 @@ def show_round_start(gs) -> None:
     print(f"  自风: {BOLD}{my_wind}{RESET}")
     print(f"  宝牌指示: {format_tiles(gs.dora_indicators)}")
     print()
-    print(f"  手牌: {format_hand(gs.hand, gs.draw)}  │ {_fmt_shanten(gs.hand)}")
+    print(f"  手牌: {format_hand(gs.hand, gs.draw)}  │ {_fmt_shanten(gs.hand, len(gs.players[gs.seat].melds))}")
     print(f"{'─' * 60}")
 
 
-def _fmt_shanten(tiles: list[str]) -> str:
+def _fmt_shanten(tiles: list[str], num_melds: int = 0) -> str:
     """格式化向听数显示"""
     try:
-        s = calc_shanten(tiles)
+        s = calc_shanten(tiles, num_melds)
         if s == -1:
             return f"{GREEN}和了{RESET}"
         elif s == 0:
@@ -111,7 +111,8 @@ def _fmt_shanten(tiles: list[str]) -> str:
 
 def show_draw(gs, tile: str) -> None:
     """摸牌"""
-    shanten_part = _fmt_shanten(gs.hand)
+    num_melds = len(gs.players[gs.seat].melds)
+    shanten_part = _fmt_shanten(gs.hand, num_melds)
     shanten_sep = f"  │ {shanten_part}" if shanten_part else ""
     print(f"  {DIM}[巡{gs.turn:2d}]{RESET} 摸 {format_tile(tile)}"
           f"  │ 手牌: {format_hand(gs.hand, tile)}"
@@ -129,7 +130,7 @@ def show_discard(gs, seat: int, tile: str, is_tsumogiri: bool = False,
     line = f"  {DIM}[巡{gs.turn:2d}]{RESET} {who} 打 {format_tile(tile)}{moqie}{riichi}"
 
     if seat == gs.seat:
-        shanten_part = _fmt_shanten(gs.hand)
+        shanten_part = _fmt_shanten(gs.hand, len(gs.players[gs.seat].melds))
         line += f"  │ 手牌: {format_hand(gs.hand)}"
         if shanten_part:
             line += f"  │ {shanten_part}"
