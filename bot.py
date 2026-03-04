@@ -497,6 +497,13 @@ class MajsoulBot:
         # ── 重放给 Mortal ──
         if replay_to_mortal:
             try:
+                # 关键：重启 Mortal 进程，清空旧状态
+                # 断线重连时 Mortal 子进程仍持有断线前的内部状态，
+                # GameRestore 会从头重放所有动作，如果不重启就会状态冲突
+                logger.info("🔄 重启 Mortal 进程以清空旧状态...")
+                self.ai._restart_mortal()
+                self.ai._send_and_collect({"type": "start_game"})
+                self.ai._game_active = True
                 self._replay_actions_to_mortal(actions)
                 logger.info("✅ Mortal 状态同步完成")
             except Exception as e:
