@@ -23,7 +23,9 @@ class AIConfig:
     command: str = ""         # mjai_subprocess: AI 程序命令
     url: str = ""             # mjai_http: AI 服务器地址
     mortal_dir: str = ""      # mortal: Mortal 目录路径
-    nerf_turns: int = 0       # 装弱：第一名时前 N 步用 ShantenAI（0=关闭）
+    nerf_turns: int = 0       # 装弱：第一名时前 N 步用 q_values 随机采样（0=关闭）
+    noise_rate: float = 0.0   # 全局扰动：每手牌有此概率打次优牌（0.0-1.0，推荐 0.05-0.08）
+    noise_temperature: float = 2.0  # 扰动温度：越高越随机（1.0=轻微, 2.0=适中, 5.0=很随机）
 
 
 @dataclass

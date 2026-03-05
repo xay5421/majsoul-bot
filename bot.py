@@ -83,6 +83,8 @@ class MajsoulBot:
         # 装弱：第一名时前 N 步用 q_values 带权随机
         self._nerf_turns = getattr(self.config.ai, 'nerf_turns', 0)
         self._nerf_active = False  # 本次出牌是否为装弱采样
+        self._noise_rate = getattr(self.config.ai, 'noise_rate', 0.0)
+        self._noise_temperature = getattr(self.config.ai, 'noise_temperature', 2.0)
         self._current_game_log = None  # 当前局日志路径
 
     def _live(self, msg: str) -> None:
@@ -230,7 +232,8 @@ class MajsoulBot:
                 f"break={run_cfg.session_break_min//60}-{run_cfg.session_break_max//60}min, "
                 f"hours={run_cfg.active_hour_start}:00-{run_cfg.active_hour_end}:00, "
                 f"night_stop={'ON' if run_cfg.night_stop else 'OFF'}, "
-                f"SLS遥测={'ON' if telemetry_enabled else 'OFF'}"
+                f"SLS遥测={'ON' if telemetry_enabled else 'OFF'}, "
+                f"扰动={self._noise_rate*100:.0f}%/T={self._noise_temperature}"
             )
             while self._running:
                 if max_games > 0 and self.games_played >= max_games:
@@ -1488,18 +1491,24 @@ class MajsoulBot:
             logger.info("服务端已确认出牌，跳过本次出牌")
             return
 
-        # 装弱判断：用 Mortal 的 q_values 做带权随机采样
+        # 装弱判断：第一名时前 N 手用 q_values 带权随机采样
         if self._should_nerf() and self._is_mortal:
-            # 先让 Mortal 正常决策（更新内部状态）
             tile = self.ai.decide_discard(gs)
-            # 然后从 q_values 采样一个次优牌
             reaction = getattr(self.ai, '_last_reaction', None) or {}
             sampled = self._nerf_sample_tile(reaction)
             if sampled:
                 tile = sampled
-            # 标记这次出牌是装弱采样的，不一致检测时不打 WARNING
             self._nerf_active = True
             logger.info(f"🤡 装弱中 (rank=1, 第{gs.my_discard_count+1}/{self._nerf_turns}手)")
+        # 全局扰动：每手牌有 noise_rate 概率打次优牌（降低 AI 重合度）
+        elif self._noise_rate > 0 and self._is_mortal and random.random() < self._noise_rate:
+            tile = self.ai.decide_discard(gs)
+            reaction = getattr(self.ai, '_last_reaction', None) or {}
+            sampled = self._nerf_sample_tile(reaction, temperature=self._noise_temperature)
+            if sampled and sampled != tile:
+                tile = sampled
+                self._nerf_active = True
+                logger.info(f"🎲 扰动出牌 (rate={self._noise_rate}, T={self._noise_temperature})")
         else:
             tile = self.ai.decide_discard(gs)
         is_moqie = (tile == gs.draw)
