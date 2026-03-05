@@ -1,11 +1,11 @@
 """雀魂自动打牌机器人 — 主入口"""
 import asyncio
+import datetime
 import logging
 import os
 import random
 import signal
 import sys
-from datetime import datetime
 
 import ms.protocol_pb2 as pb
 from google.protobuf.json_format import MessageToDict
@@ -63,6 +63,10 @@ class MajsoulBot:
     def __init__(self, config_path: str = "config.yaml"):
         self.config = load_config(config_path)
         self.client = MajsoulClient()
+        # 传递遥测配置
+        telemetry_cfg = getattr(self.config, 'telemetry', None)
+        if telemetry_cfg and not getattr(telemetry_cfg, 'enabled', True):
+            self.client.telemetry._enabled = False
         self.ai = _create_ai(self.config)
         ai_type = self.config.ai.type
         logger.info(f"AI 引擎: {ai_type}")
@@ -91,7 +95,7 @@ class MajsoulBot:
         # 关闭上一局的 handler
         self._stop_game_live_log()
 
-        game_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        game_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         game_num = self.games_played + 1
         log_path = f"logs/game_{game_time}_#{game_num}.log"
         self._live_handler = logging.FileHandler(log_path, encoding="utf-8")
@@ -124,7 +128,7 @@ class MajsoulBot:
         )
 
         # 全局文件日志 — 整个运行周期写一个文件，记录所有 logger 输出
-        start_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        start_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         bot_log_path = f"logs/bot_{start_time}.log"
         bot_file_handler = logging.FileHandler(bot_log_path, encoding="utf-8")
         bot_file_handler.setLevel(log_level)
@@ -182,9 +186,8 @@ class MajsoulBot:
                     logger.warning(f"刷新段位失败: {e}")
                 logger.info(f"残留对局处理完毕: _running={self._running}, max_games={self.config.run.max_games}")
                 if self._running and self.config.run.max_games != 1:
-                    base = self.config.run.game_interval
-                    interval = base + random.uniform(-5, 10)
-                    logger.info(f"等待 {interval:.0f} 秒后继续...")
+                    interval = self.human.get_game_interval(self.config.run)
+                    logger.info(f"等待 {interval:.0f}s ({interval/60:.1f}分钟) 后继续...")
                     await asyncio.sleep(interval)
             else:
                 # 重连失败，可能 token 永久失效
@@ -218,13 +221,60 @@ class MajsoulBot:
             # 主循环
             max_games = self.config.run.max_games
             match_mode = self.config.match.mode
+            run_cfg = self.config.run
             logger.info(f"进入主循环: max_games={max_games}, mode={match_mode}, _running={self._running}")
+            telemetry_enabled = getattr(getattr(self.config, 'telemetry', None), 'enabled', True)
+            logger.info(
+                f"🛡️ 反检测: interval={run_cfg.game_interval_min}-{run_cfg.game_interval_max}s, "
+                f"session={run_cfg.session_games_min}-{run_cfg.session_games_max}局, "
+                f"break={run_cfg.session_break_min//60}-{run_cfg.session_break_max//60}min, "
+                f"hours={run_cfg.active_hour_start}:00-{run_cfg.active_hour_end}:00, "
+                f"night_stop={'ON' if run_cfg.night_stop else 'OFF'}, "
+                f"SLS遥测={'ON' if telemetry_enabled else 'OFF'}"
+            )
             while self._running:
                 if max_games > 0 and self.games_played >= max_games:
                     logger.info(f"已完成 {self.games_played} 局，停止匹配")
                     break
 
+                # ── 反检测: 活跃时段检查 ──
+                if run_cfg.night_stop and not self.human.is_active_hours(run_cfg):
+                    import datetime
+                    now = datetime.datetime.now()
+                    logger.info(f"🌙 当前 {now.strftime('%H:%M')} 不在活跃时段 "
+                                f"({run_cfg.active_hour_start}:00-{run_cfg.active_hour_end}:00)，等待...")
+                    # 计算到活跃时段开始的秒数
+                    target_hour = run_cfg.active_hour_start
+                    target = now.replace(hour=target_hour, minute=random.randint(0, 30),
+                                         second=random.randint(0, 59), microsecond=0)
+                    if target <= now:
+                        target += datetime.timedelta(days=1)
+                    wait_secs = (target - now).total_seconds()
+                    logger.info(f"🌙 将在 {target.strftime('%H:%M')} 恢复 (等待 {wait_secs/60:.0f} 分钟)")
+                    await asyncio.sleep(wait_secs)
+                    continue
+
+                # ── 反检测: session 休息 ──
+                if self.human.should_take_session_break(run_cfg):
+                    break_time = self.human.get_session_break(run_cfg)
+                    logger.info(f"☕ Session 休息 {break_time:.0f}s ({break_time/60:.1f}分钟)...")
+                    await asyncio.sleep(break_time)
+                    logger.info("☕ 休息结束，继续")
+
                 self._game_end_event.clear()
+
+                # ── 反检测: 匹配前模拟大厅行为 ──
+                try:
+                    # 模拟大厅浏览
+                    lobby_time = self.human.get_lobby_stay_time()
+                    logger.info(f"🏠 模拟大厅浏览 {lobby_time:.1f}s...")
+                    await self.client.simulate_lobby_browse(lobby_time)
+
+                    # 模拟打开匹配 UI
+                    browse_time = self.human.get_match_ui_browse_time()
+                    await self.client.simulate_match_ui(browse_time)
+                except Exception as e:
+                    logger.debug(f"UI 模拟失败 (可忽略): {e}")
 
                 if match_mode == "ai":
                     room_id = await self.client.create_ai_room(
@@ -338,9 +388,15 @@ class MajsoulBot:
                     logger.warning(f"刷新段位失败: {e}")
 
                 if self._running and max_games != 1:
-                    base = self.config.run.game_interval
-                    interval = base + random.uniform(-5, 10)
-                    logger.info(f"等待 {interval:.0f} 秒后继续...")
+                    # ── 反检测: 对局结束后模拟行为 ──
+                    try:
+                        await self.client.simulate_post_game()
+                    except Exception as e:
+                        logger.debug(f"结算 UI 模拟失败 (可忽略): {e}")
+
+                    # ── 反检测: 拟人化局间间隔 ──
+                    interval = self.human.get_game_interval(run_cfg)
+                    logger.info(f"等待 {interval:.0f}s ({interval/60:.1f}分钟) 后继续...")
                     await asyncio.sleep(interval)
 
             heartbeat_task.cancel()

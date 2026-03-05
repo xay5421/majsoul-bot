@@ -31,6 +31,16 @@ class RunConfig:
     max_games: int = 1
     game_interval: int = 5
     log_level: str = "INFO"
+    # 反检测: 节奏控制
+    game_interval_min: int = 45       # 局间最短间隔(秒)
+    game_interval_max: int = 180      # 局间最长间隔(秒)
+    session_games_min: int = 6        # 每个session最少打几局
+    session_games_max: int = 15       # 每个session最多打几局
+    session_break_min: int = 300      # session间休息最短(秒)
+    session_break_max: int = 900      # session间休息最长(秒)
+    active_hour_start: int = 9        # 活跃时段开始(小时, 本地时间)
+    active_hour_end: int = 25         # 活跃时段结束(25=次日1点)
+    night_stop: bool = True           # 凌晨自动停止
 
 
 @dataclass
@@ -43,12 +53,18 @@ class EmojiConfig:
 
 
 @dataclass
+class TelemetryConfig:
+    enabled: bool = True          # 启用 HTTP 行为日志上报 (阿里云 SLS)
+
+
+@dataclass
 class Config:
     account: AccountConfig = field(default_factory=AccountConfig)
     match: MatchConfig = field(default_factory=MatchConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     run: RunConfig = field(default_factory=RunConfig)
     emoji: EmojiConfig = field(default_factory=EmojiConfig)
+    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
 
 
 def load_config(path: str = "config.yaml") -> Config:
@@ -72,5 +88,7 @@ def load_config(path: str = "config.yaml") -> Config:
         config.run = RunConfig(**raw["run"])
     if "emoji" in raw:
         config.emoji = EmojiConfig(**raw["emoji"])
+    if "telemetry" in raw:
+        config.telemetry = TelemetryConfig(**raw["telemetry"])
 
     return config

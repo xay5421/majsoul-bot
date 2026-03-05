@@ -12,9 +12,10 @@ import aiohttp
 from google.protobuf.json_format import MessageToDict
 
 from ms.base import MSRPCChannel
-from ms.rpc import Lobby, FastTest
+from ms.rpc import Lobby, FastTest, Route
 import ms.protocol_pb2 as pb
 from codec import decode as xor_decode
+from telemetry import TelemetryReporter
 
 
 class MatchError1023(Exception):
@@ -73,6 +74,8 @@ class MajsoulClient:
         self.channel: MSRPCChannel | None = None
         self.lobby: Lobby | None = None
         self.fast_test: FastTest | None = None
+        self.route: Route | None = None  # Route 服务（心跳 + 路由探测）
+        self.telemetry: TelemetryReporter = TelemetryReporter()  # HTTP 行为日志上报
         self.account_id: int = 0
         self.nickname: str = ""
         self.access_token: str = ""
@@ -182,9 +185,14 @@ class MajsoulClient:
         self.channel = MSRPCChannel(endpoint)
         self.lobby = Lobby(self.channel)
         self.fast_test = FastTest(self.channel)
+        self.route = Route(self.channel)  # Route 服务绑定到同一个 channel
 
         await self.channel.connect(MS_HOST)
         logger.info("连接成功")
+
+        # 启动 HTTP telemetry 上报
+        self.telemetry.set_version(self.version)
+        await self.telemetry.start()
 
     async def close(self) -> None:
         """关闭连接（先 logout 再断开，避免 1003）
@@ -216,6 +224,9 @@ class MajsoulClient:
                 except Exception:
                     pass
                 logger.info("连接已关闭")
+
+        # 关闭 HTTP telemetry
+        await self.telemetry.close()
 
     async def reconnect_lobby(self) -> bool:
         """重新连接 lobby（断线后恢复）
@@ -280,7 +291,24 @@ class MajsoulClient:
         req.password = hmac.new(
             b"lailai", password.encode(), hashlib.sha256
         ).hexdigest()
+        # 真实 Chrome 浏览器设备指纹
+        req.device.platform = "pc"
+        req.device.hardware = "pc"
+        req.device.os = "windows"
+        req.device.os_version = "Windows 10"
         req.device.is_browser = True
+        req.device.software = "Chrome"
+        req.device.sale_platform = "web"
+        req.device.hardware_vendor = ""
+        req.device.model_number = ""
+        req.device.screen_width = 1920
+        req.device.screen_height = 1080
+        req.device.screen_type = 1
+        req.device.user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/133.0.0.0 Safari/537.36"
+        )
         req.random_key = uuid_key
         req.gen_access_token = True
         req.client_version_string = f"web-{version_clean}"
@@ -298,6 +326,9 @@ class MajsoulClient:
         self.nickname = res.account.nickname if res.account else ""
         logger.info(f"登录成功! ID: {self.account_id}, 昵称: {self.nickname}")
         logger.info(f"access_token: {self.access_token}")
+
+        # 设置 telemetry 的 account_id + session_id
+        self.telemetry.set_account(self.account_id)
 
         # 段位信息
         self.rank_info = ""
@@ -352,7 +383,141 @@ class MajsoulClient:
         except Exception as e:
             logger.warning(f"fetchInfo 失败 (可忽略): {e}")
 
+        # 模拟真实客户端登录后的初始化请求序列
+        # 真实客户端会在登录后立即请求这些数据
+        # 不请求这些的话 RPC 频率/种类特征和真实客户端不一致
+        for name, call in [
+            ("fetchServerSettings",
+             lambda: self.lobby.fetch_server_settings(pb.ReqCommon())),
+            ("fetchDailyTask",
+             lambda: self.lobby.fetch_daily_task(pb.ReqCommon())),
+            ("fetchActivityList",
+             lambda: self.lobby.fetch_activity_list(pb.ReqCommon())),
+            ("fetchCharacterInfo",
+             lambda: self.lobby.fetch_character_info(pb.ReqCommon())),
+            ("fetchBagInfo",
+             lambda: self.lobby.fetch_bag_info(pb.ReqCommon())),
+            ("fetchMailInfo",
+             lambda: self.lobby.fetch_mail_info(pb.ReqCommon())),
+            ("fetchShopInfo",
+             lambda: self.lobby.fetch_shop_info(pb.ReqCommon())),
+            ("fetchDailySignInInfo",
+             lambda: self.lobby.fetch_daily_sign_in_info(pb.ReqCommon())),
+            ("fetchAccountActivityData",
+             lambda: self.lobby.fetch_account_activity_data(pb.ReqCommon())),
+        ]:
+            try:
+                await call()
+                logger.debug(f"{name} OK")
+            except Exception as e:
+                logger.debug(f"{name} 失败 (可忽略): {e}")
+
+        # 模拟客户端行为：登录后通过 HTTP 上报 showEnter + firstIn 事件到 SLS
+        await self.telemetry.report_show_enter()
+        await self.telemetry.report_first_in()
+
         logger.info("登录初始化完成")
+
+    # ─── 行为追踪模拟 ─────────────────────────────
+    #
+    # 两套 telemetry 系统:
+    #   1. HTTP → 阿里云 SLS: bi_trace, clickLogMap, lobbyCostTime
+    #      → 通过 self.telemetry (TelemetryReporter) 上报
+    #   2. WebSocket RPC: logReport, clientMessage (RPC 级别的上报)
+    #      → 通过 lobby RPC 直接调用
+
+    async def _send_log_report(self) -> None:
+        """通过 Lobby.logReport 上报日志上传统计（WebSocket RPC）
+        
+        success/failed 是 日志上报成功/失败次数（logSuccessCount/logFailedCount）。
+        这些计数来自 HTTP SLS 上报的成功/失败次数。
+        """
+        try:
+            req = pb.ReqLogReport()
+            # 用 telemetry reporter 的真实计数
+            req.success = self.telemetry.log_success_count or random.randint(80, 120)
+            req.failed = self.telemetry.log_failed_count
+            await self.lobby.log_report(req)
+            logger.debug("logReport OK")
+        except Exception as e:
+            logger.debug(f"logReport 发送失败 (可忽略): {e}")
+
+    # ─── 反检测: UI 行为模拟 ────────────────────────
+
+    async def simulate_lobby_browse(self, stay_time: float = 5.0) -> None:
+        """模拟在大厅浏览的行为序列
+
+        真实客户端在大厅会触发 ELobbyClickLog 枚举事件，通过
+        startClickLog → clickLogMap[event]++ → reportClickCount
+        → sendHistory → HTTP logUp → 阿里云 SLS 上报。
+
+        **不走 WebSocket RPC！走 HTTP → SLS。**
+        """
+        import time as _time
+
+        lobby_enter_ts = int(_time.time() * 1000)
+
+        # 模拟 page_enter (HTTP)
+        await self.telemetry.report_page_enter("lobby")
+
+        # 随机停留并模拟 1-2 个页面浏览
+        click_log_map = {"page_enter": 1}
+        pages = ["ranking", "friend", "mail", "shop", "record", "task"]
+        n_visits = random.randint(1, 2)
+        chosen_pages = random.sample(pages, min(n_visits, len(pages)))
+
+        elapsed = 0.0
+        for page in chosen_pages:
+            wait = random.uniform(1.5, stay_time / max(n_visits, 1))
+            await asyncio.sleep(wait)
+            elapsed += wait
+            await self.telemetry.report_page_visit(page)
+            click_log_map["show_page_visit"] = click_log_map.get("show_page_visit", 0) + 1
+
+        # 剩余时间等完
+        remaining = stay_time - elapsed
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+
+        # 批量上报 clickLogMap (HTTP → SLS)
+        await self.telemetry.report_click_count(click_log_map, page="lobby")
+
+        # 上报 lobbyCostTime (HTTP → SLS)
+        lobby_cost = int(_time.time() * 1000) - lobby_enter_ts
+        await self.telemetry.report_lobby_cost_time("lobby", lobby_cost)
+
+    async def simulate_match_ui(self, browse_time: float = 3.0) -> None:
+        """模拟打开匹配界面 → 浏览 → 点击匹配的行为
+
+        真实客户端事件名来自 ELobbyClickLog 枚举:
+        - OPEN_MATCH_UI: 打开匹配面板
+        - CLOSE_MATCH_UI: 关闭匹配面板 (取消匹配时)
+        
+        上报走 HTTP → SLS。
+        """
+        # 上报 OPEN_MATCH_UI (HTTP → SLS)
+        await self.telemetry.report_match_ui("OPEN_MATCH_UI")
+
+        # 在匹配界面停留
+        await asyncio.sleep(browse_time)
+
+    async def simulate_post_game(self) -> None:
+        """模拟对局结束后的行为
+
+        真人会看结算画面、翻看牌谱、看段位变化...
+        行为事件通过 HTTP → SLS 上报。
+        """
+        # 结算画面停留
+        await asyncio.sleep(random.uniform(2.0, 5.0))
+
+        # 50% 概率看一下牌谱
+        if random.random() < 0.5:
+            await asyncio.sleep(random.uniform(1.0, 3.0))
+            await self.telemetry.report_page_visit("record")
+            await asyncio.sleep(random.uniform(2.0, 8.0))
+
+        # 返回大厅
+        await self.telemetry.report_page_enter("lobby")
 
     async def check_and_reconnect_game(self) -> bool:
         """检查并重连残留对局（带重试）
@@ -602,15 +767,47 @@ class MajsoulClient:
         interval 设为 10 秒，加速断线检测。
         禁用了 websockets 内建 ping，需要靠应用层心跳来检测连接存活。
         
+        三套心跳系统（来自 proto 定义）：
+        1. Lobby.heatbeat → ReqHeatBeat { no_operation_counter }
+        2. FastTest.checkNetworkDelay → ReqCommon {} (对局中)
+        3. Route.heartbeat → ReqHeartbeat { delay, no_operation_counter, platform, network_quality }
+           (真实客户端通过 route 服务发送，包含网络延迟等信息)
+        
         如果 lobby 心跳连续失败，会自动重连 lobby。
+        
+        no_operation_counter 模拟真实玩家行为：
+        - 对局中 → 0（正在操作）
+        - 大厅等待中 → 随心跳递增（玩家在发呆/看别的）
+        - 偶尔重置（模拟点击了什么）
+        - 触发操作（匹配、进入对局）时重置为 0
         """
         game_fail_count = 0
         lobby_fail_count = 0
+        self._no_op_counter = 0
+        self._network_delay = random.randint(30, 80)  # 模拟网络延迟(ms)
         while True:
-            # lobby 心跳
+            # 根据状态更新 no_operation_counter
+            if self._game_state == ConnectionState.IN_GAME:
+                # 对局中，玩家在操作
+                self._no_op_counter = 0
+            else:
+                # 大厅等待中，每次心跳递增（模拟挂机/发呆）
+                self._no_op_counter += 1
+                # 偶尔重置（模拟玩家在大厅点了什么）
+                if random.random() < 0.08:
+                    self._no_op_counter = random.randint(0, 2)
+
+            # 模拟网络延迟波动 (±5-15ms 抖动，偶尔突增)
+            if random.random() < 0.05:
+                # 5% 概率网络波动
+                self._network_delay = random.randint(80, 200)
+            else:
+                self._network_delay = max(15, self._network_delay + random.randint(-10, 10))
+
+            # lobby 心跳 (Lobby.heatbeat → ReqHeatBeat)
             try:
                 req = pb.ReqHeatBeat()
-                req.no_operation_counter = 0
+                req.no_operation_counter = self._no_op_counter
                 await asyncio.wait_for(self.lobby.heatbeat(req), timeout=8)
                 logger.debug("心跳 OK (lobby)")
                 lobby_fail_count = 0
@@ -629,7 +826,33 @@ class MajsoulClient:
                         logger.error("lobby 重连失败，退出心跳循环")
                         break
             
-            # game server 心跳 (FastTest 用 checkNetworkDelay，不是 heartbeat)
+            # Route heartbeat (Route.heartbeat → ReqHeartbeat)
+            # 真实客户端通过 route 服务定期发送，包含网络延迟和质量信息
+            # 从 code.js: route.connect → sendHeartBeat → timer loop (~10s)
+            if self.route and self.channel and self.channel.is_connected:
+                try:
+                    rreq = pb.ReqHeartbeat()
+                    rreq.delay = self._network_delay
+                    rreq.no_operation_counter = self._no_op_counter
+                    rreq.platform = 1  # 1 = web
+                    # network_quality: 0=unknown, 1=excellent, 2=good, 3=normal, 4=bad
+                    if self._network_delay < 60:
+                        rreq.network_quality = 1  # excellent
+                    elif self._network_delay < 120:
+                        rreq.network_quality = 2  # good
+                    elif self._network_delay < 200:
+                        rreq.network_quality = 3  # normal
+                    else:
+                        rreq.network_quality = 4  # bad
+                    await asyncio.wait_for(self.route.heartbeat(rreq), timeout=8)
+                    logger.debug(f"心跳 OK (route, delay={self._network_delay}ms, nq={rreq.network_quality})")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    # Route 心跳失败不致命，只记录
+                    logger.debug(f"Route 心跳失败 (可忽略): {e}")
+
+            # game server 心跳 (FastTest.checkNetworkDelay → ReqCommon)
             if self.fast_test and self._game_channel and self._game_channel.is_connected:
                 try:
                     greq = pb.ReqCommon()
@@ -648,9 +871,19 @@ class MajsoulClient:
                         logger.error("game server 心跳连续3次失败，标记断线")
                         self._game_disconnected.set()
                         game_fail_count = 0
+
+            # 定期上报 tracking 事件（模拟真实客户端行为）
+            if not hasattr(self, '_tracking_tick'):
+                self._tracking_tick = 0
+            self._tracking_tick += 1
+            # 每 ~60 秒上报一次 logReport，加随机抖动
+            if self._tracking_tick % random.randint(5, 8) == 0:
+                await self._send_log_report()
             
             try:
-                await asyncio.sleep(interval)
+                # 心跳间隔加微抖动 (±2s)，防止太规律
+                jitter = random.uniform(-2, 2)
+                await asyncio.sleep(max(5, interval + jitter))
             except asyncio.CancelledError:
                 raise
 
@@ -732,6 +965,9 @@ class MajsoulClient:
 
         version_clean = self.version.replace(".w", "")
         logger.info(f"开始匹配: {desc} (match_sid={match_sid})")
+
+        # 触发操作，重置无操作计数器
+        self._no_op_counter = 0
 
         req = pb.ReqStartUnifiedMatch()
         req.match_sid = match_sid

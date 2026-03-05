@@ -55,32 +55,18 @@ echo '{"type":"start_game","id":0}' | python Mortal/mortal/mortal.py 0
 cp config.example.yaml config.yaml
 ```
 
-编辑 `config.yaml`：
-
-```yaml
-account:
-  username: "your_email@qq.com"
-  password: "your_password"
-
-match:
-  mode: "rank"          # rank (段位赛) / ai (AI对战)
-  room_type: "4s"       # 4e (四人东) / 4s (四人南)
-  level: "silver"       # copper / silver / gold
-
-ai:
-  type: "mortal"        # basic / shanten / mortal
-  nerf_turns: 0         # 装弱：第一名时前 N 手用随机采样（0=关闭）
-
-run:
-  max_games: 5          # 连续打几局 (0 = 不限)
-  game_interval: 5      # 每局间隔秒数
-  log_level: "INFO"
-```
+编辑 `config.yaml`，参考 `config.example.yaml` 中的详细注释。
 
 ### 4. 运行
 
 ```bash
 python bot.py
+```
+
+后台运行（脱离终端进程组，防止退出时误杀）：
+
+```bash
+setsid python bot.py &
 ```
 
 Ctrl+C 优雅退出（会先 logout 再断开连接）。
@@ -97,15 +83,55 @@ Ctrl+C 优雅退出（会先 logout 再断开连接）。
 
 `nerf_turns: 10` — 当自己是第一名时，每局自己的前 10 手出牌使用 Mortal Q 值的 softmax 带权随机采样（temperature=2.0），偶尔打次优牌但不会打出离谱的牌。超过 N 手后恢复正常。
 
+## 反检测系统
+
+Bot 实现了多层反检测措施，模拟真实客户端行为，降低被风控系统识别的风险。
+
+### 行为模拟
+
+| 功能 | 说明 |
+|------|------|
+| **仿人延迟** | 摸切 0.5-1.8s / 手切 1-4s / 鸣牌 1-3s / 和了 0.5-2s / 立直 1.5-4.5s |
+| **疲劳曲线** | 越打越慢，偶尔走神 +2-6s，偶尔手速特快 ×0.5 |
+| **Session 机制** | 每 6-15 局休息 5-15 分钟，模拟真人作息 |
+| **夜间停止** | 1:00-9:00 自动暂停，到点恢复 |
+| **局间间隔** | 45-180s 随机等待，15% 概率 AFK 额外 +1-3 分钟 |
+| **大厅行为** | 匹配前模拟浏览排行/好友/商店等页面 |
+| **匹配 UI** | 模拟打开匹配面板、停留浏览后再点匹配 |
+| **结算行为** | 看结算画面、50% 概率翻看牌谱 |
+
+### 协议模拟
+
+| 功能 | 说明 |
+|------|------|
+| **设备指纹** | 完整 Chrome/Win10 指纹（platform, hardware, os, user_agent, screen 等） |
+| **三套心跳** | Lobby.heatbeat + FastTest.checkNetworkDelay + Route.heartbeat |
+| **Route 心跳** | 带 delay, no_operation_counter, platform, network_quality 字段 |
+| **网络延迟模拟** | 基础 30-80ms ± 波动，5% 概率突增 80-200ms |
+| **no_op_counter** | 大厅递增/偶尔重置，对局中归零，匹配时归零 |
+| **logReport** | 定期上报日志成功/失败计数 |
+
+### 遥测上报 (SLS)
+
+模拟真实客户端的阿里云 SLS 行为日志上报（HTTP POST）：
+
+- **bi_trace**: 页面进入、页面浏览、showEnter 等事件 + 设备/版本公共字段
+- **clickLogMap**: ELobbyClickLog 点击事件计数汇总上报
+- **lobbyCostTime**: 大厅页面停留时长上报
+
+> 两套系统分离：WebSocket RPC 管游戏逻辑（login/match/game/heartbeat），HTTP 管行为日志上报。
+
+所有参数可在 `config.yaml` 中调整，参见 `config.example.yaml` 的详细注释。
+
 ## 功能特性
 
 - **纯协议**：WebSocket + Protobuf，不依赖浏览器或代理
-- **段位赛**：铜 / 银 / 金之间，四人东 / 四人南
+- **段位赛**：铜 / 银 / 金 / 玉 / 王座之间，四人东 / 四人南
 - **断线重连**：自动检测残留对局 → 重连 game-gateway → GameRestore 恢复 → Mortal 状态重放
 - **Mortal 状态同步**：服务端超时自动摸切时，检测出牌不一致并重启 Mortal 重放修正事件序列
 - **操作竞争保护**：防止网络延迟导致重复出牌
 - **独立日志**：每局 `logs/game_*.log` + 全局 `logs/bot_*.log`
-- **仿人延迟**：摸切 / 手切 / 鸣牌 / 和了各有不同随机延迟
+- **游戏表情**：和牌/立直时随机发送表情
 
 ## 项目结构
 
@@ -117,7 +143,8 @@ majsoul-bot/
 ├── codec.py            # ActionPrototype XOR 解码
 ├── config.py           # 配置管理
 ├── display.py          # 终端彩色输出
-├── human_like.py       # 仿人操作延迟
+├── human_like.py       # 仿人操作延迟 + 节奏控制
+├── telemetry.py        # 阿里云 SLS 行为日志上报 (HTTP)
 ├── tiles.py            # 麻将牌编码转换
 ├── ai/
 │   ├── base.py         # AI 基类接口
@@ -126,15 +153,12 @@ majsoul-bot/
 │   └── mortal.py       # Mortal AI 封装（subprocess + mjai 协议）
 ├── ms/                 # mahjong_soul_api 协议库（vendored）
 ├── Mortal/             # Mortal AI 源码（含训练代码）
-│   ├── mortal/
-│   │   ├── mortal.py       # 推理入口（mjai stdin/stdout）
-│   │   ├── config.toml     # 模型配置
-│   │   ├── mortal.pth      # 模型权重（需手动放置，git 不追踪）
-│   │   ├── libriichi.so    # Rust 推理引擎（需手动放置）
-│   │   ├── train.py        # 训练脚本
-│   │   └── data/           # 训练数据目录
-│   └── libriichi/          # Rust 源码（编译用）
-├── config.example.yaml
+│   └── mortal/
+│       ├── mortal.py       # 推理入口（mjai stdin/stdout）
+│       ├── config.toml     # 模型配置
+│       ├── mortal.pth      # 模型权重（需手动放置，git 不追踪）
+│       └── libriichi.so    # Rust 推理引擎（需手动放置）
+├── config.example.yaml # 配置模板（含详细注释）
 ├── logs/               # 运行日志（git 不追踪）
 └── requirements.txt
 ```
@@ -180,32 +204,6 @@ majsoul-bot/
 - **操作时限**：铜/银之间操作时限较短（~2-3 秒），延迟不能太大
 - **匹配 API**：用 `startUnifiedMatch`，旧的 `matchGame` 已废弃（会返回 1306）
 
-### 训练自己的模型
-
-Mortal 训练管线在 `Mortal/mortal/` 下：
-
-```bash
-cd Mortal/mortal
-
-# 一键脚本：下载数据 → 转换 → 训练 GRP → 训练主模型
-./setup_and_train.sh all
-
-# 或分步执行
-./setup_and_train.sh data    # 下载天凤牌谱
-./setup_and_train.sh grp     # 训练 GRP（局面评估）
-./setup_and_train.sh train   # 训练主模型（offline CQL）
-```
-
-训练完成后导出推理权重：
-
-```bash
-python export_weights.py best_state.pth mortal.pth
-```
-
-需要修改 `config.toml` 的 `conv_channels` 和 `num_blocks` 匹配训练配置。
-
-> **硬件建议**：训练需要 GPU。RTX 5070（12GB）推荐 `conv_channels=128, num_blocks=20`（~25M 参数）。
-
 ## 常见问题
 
 **Q: 匹配返回 1306？**
@@ -220,8 +218,8 @@ A: mjai 协议不同步。常见原因：立直协议未完成（需 reach → d
 **Q: libriichi 加载失败？**
 A: 确认 Python 版本（3.10-3.12）和系统架构匹配。`ldd libriichi.so` 检查动态库依赖。
 
-**Q: torch 报错 "No module named 'torch'"？**
-A: 确认在 bot 的 `.venv` 里装了 torch。Mortal 不再需要独立 venv，共用 bot 的即可。
+**Q: SLS 遥测上报失败？**
+A: SLS 上报失败不影响打牌，日志里会有 `SLS 上报失败` 或 `SLS 上报异常` 提示。可以在 `config.yaml` 中设置 `telemetry.enabled: false` 禁用。
 
 ## 免责声明
 
