@@ -1396,13 +1396,13 @@ class MajsoulBot:
             return False
         return gs.my_rank == 1 and gs.my_discard_count < self._nerf_turns
 
-    def _nerf_sample_tile(self, reaction: dict, temperature: float = 2.0) -> str | None:
-        """从 Mortal 的 q_values 做 softmax 采样选择次优牌（装弱用）。
+    def _nerf_sample_tile(self, reaction: dict, temperature: float = 2.0,
+                           exclude_best: bool = False) -> str | None:
+        """从 Mortal 的 q_values 做 softmax 采样选择次优牌。
         
-        temperature 越高越随机：
-          1.0 = 正常 softmax（略随机）
-          2.0 = 较随机（默认，偶尔打次优）
-          5.0+ = 接近均匀随机
+        Args:
+            temperature: softmax 温度，越高越随机
+            exclude_best: 如果为 True，排除最优牌后再采样（保证换牌）
         """
         import math
         import random as _rng
@@ -1434,6 +1434,12 @@ class MajsoulBot:
         
         if len(discard_qs) < 2:
             return None  # 只有一张可出，没法随机
+
+        # 排除最优牌模式：去掉 Q 值最高的那张
+        if exclude_best and len(discard_qs) >= 3:
+            best_idx = discard_qs.index(max(discard_qs))
+            discard_indices = [d for j, d in enumerate(discard_indices) if j != best_idx]
+            discard_qs = [q for j, q in enumerate(discard_qs) if j != best_idx]
         
         # softmax with temperature
         max_q = max(discard_qs)
@@ -1510,7 +1516,8 @@ class MajsoulBot:
             logger.info(f"🎲 扰动触发: reaction_type={reaction.get('type')}, "
                          f"has_meta={bool(meta)}, has_q={q_values is not None}, "
                          f"has_mask={mask_bits is not None}")
-            sampled = self._nerf_sample_tile(reaction, temperature=self._noise_temperature)
+            sampled = self._nerf_sample_tile(reaction, temperature=self._noise_temperature,
+                                               exclude_best=True)
             if sampled and sampled != tile:
                 tile = sampled
                 self._nerf_active = True
