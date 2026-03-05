@@ -1124,10 +1124,7 @@ class MajsoulBot:
                 self.ai.send_hora(hi.seat, target, hi.hu_tile)
             self.ai.send_end_kyoku()
 
-        # 🎉 和牌时发表情
-        my_win = any(hi.seat == gs.seat for hi in msg.hules)
-        if my_win:
-            await self._send_win_emoji()
+        # 和牌表情已在 action 决策时发送（先表情后点和牌），此处不重复
 
         # 等一下再确认进入下一局
         delay = self.human.get_new_round_delay()
@@ -1164,7 +1161,8 @@ class MajsoulBot:
 
         emo_id = random.choice(pool)
         try:
-            await asyncio.sleep(0.3)
+            # 真人发表情：看到结果 → 反应 → 找到表情 → 点击
+            await asyncio.sleep(random.uniform(0.3, 1.2))
             await self.client.send_emoji(emo_id)
         except Exception as e:
             logger.debug(f"发送{trigger}表情失败: {e}")
@@ -1358,12 +1356,16 @@ class MajsoulBot:
             # 自摸/荣和
             call = "tsumo" if action_type == 8 else "ron"
             display.show_action_decision(call)
+            # 先发表情庆祝，再点和牌（真人：看到能和 → 兴奋发表情 → 点确认）
+            await self._send_emoji_for("win")
             delay = self.human.get_call_delay(call)
             await asyncio.sleep(delay)
             await self.client.win(action_type)
         elif action_type == 7:
             # 立直
             display.show_action_decision("riichi")
+            # 先发表情再立直（真人：决定立直 → 发个表情 → 宣言）
+            await self._send_emoji_for("riichi")
             delay = self.human.get_riichi_delay()
             await asyncio.sleep(delay)
             tile = action.get("tile", "")
@@ -1371,8 +1373,6 @@ class MajsoulBot:
                 tile = self.ai.decide_discard(gs)
             is_moqie = (tile == gs.draw)
             await self.client.discard_tile(tile, is_riichi=True, moqie=is_moqie)
-            # 立直宣言后发表情
-            await self._send_emoji_for("riichi")
         elif action_type in [2, 3, 4, 5, 6]:
             # 吃(2)/碰(3)/暗杠(4)/明杠(5)/加杠(6)
             call = {2: "chi", 3: "pon", 4: "kan", 5: "kan", 6: "kan"}.get(action_type, "?")
