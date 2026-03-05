@@ -25,7 +25,7 @@ class AIConfig:
     mortal_dir: str = ""      # mortal: Mortal 目录路径
     nerf_turns: int = 0       # 装弱：第一名时前 N 步用 q_values 随机采样（0=关闭）
     noise_rate: float = 0.0   # 全局扰动：每手牌有此概率打次优牌（0.0-1.0，推荐 0.05-0.08）
-    noise_temperature: float = 2.0  # 扰动温度：越高越随机（1.0=轻微, 2.0=适中, 5.0=很随机）
+    noise_temperature: float = 0.5  # 扰动温度：越高越随机（0.3=几乎只选第2优, 0.5=推荐, 1.0=较随机）
 
 
 @dataclass

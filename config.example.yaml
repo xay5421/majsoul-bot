@@ -37,9 +37,13 @@ ai:
   # 每手牌有 noise_rate 概率不选 Mortal 最优解，而是从 Q 值分布中采样次优牌
   # 用于降低与公开 Mortal 模型的出牌重合率，避免被服务端 AI 检测识别
   # noise_rate: 0.0-1.0 (推荐 0.05-0.08，即 5-8%)
-  # noise_temperature: softmax 温度，越高越随机 (1.0=轻微偏移, 2.0=适中, 5.0=很随机)
+  # noise_temperature: softmax 温度
+  #   0.3 = 几乎只选第2优 (前2优占 89%)
+  #   0.5 = 推荐 (前2优占 75%, 偶尔第3优)
+  #   1.0 = 较随机 (前2优占 59%, 会选到差牌)
+  #   2.0+ = 接近均匀随机 (不推荐)
   noise_rate: 0.06
-  noise_temperature: 2.0
+  noise_temperature: 0.5
 
 # 表情设置
 emoji:
