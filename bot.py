@@ -239,7 +239,6 @@ class MajsoulBot:
 
                 # ── 反检测: 活跃时段检查 ──
                 if run_cfg.night_stop and not self.human.is_active_hours(run_cfg):
-                    import datetime
                     now = datetime.datetime.now()
                     logger.info(f"🌙 当前 {now.strftime('%H:%M')} 不在活跃时段 "
                                 f"({run_cfg.active_hour_start}:00-{run_cfg.active_hour_end}:00)，等待...")
