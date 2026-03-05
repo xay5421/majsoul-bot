@@ -1504,11 +1504,19 @@ class MajsoulBot:
         elif self._noise_rate > 0 and self._is_mortal and random.random() < self._noise_rate:
             tile = self.ai.decide_discard(gs)
             reaction = getattr(self.ai, '_last_reaction', None) or {}
+            meta = reaction.get("meta") or {}
+            q_values = meta.get("q_values")
+            mask_bits = meta.get("mask_bits")
+            logger.info(f"🎲 扰动触发: reaction_type={reaction.get('type')}, "
+                         f"has_meta={bool(meta)}, has_q={q_values is not None}, "
+                         f"has_mask={mask_bits is not None}")
             sampled = self._nerf_sample_tile(reaction, temperature=self._noise_temperature)
             if sampled and sampled != tile:
                 tile = sampled
                 self._nerf_active = True
                 logger.info(f"🎲 扰动出牌 (rate={self._noise_rate}, T={self._noise_temperature})")
+            else:
+                logger.info(f"🎲 扰动触发但未生效: sampled={sampled}, original={tile}")
         else:
             tile = self.ai.decide_discard(gs)
         is_moqie = (tile == gs.draw)
