@@ -79,7 +79,8 @@ class MajsoulBot:
         self._in_game = False
         self._game_end_event = asyncio.Event()
         self._is_mortal = (ai_type == "mortal")
-        self._discard_confirmed = False  # 服务端已确认出牌（防止竞争）
+        self._discard_event = asyncio.Event()  # 服务端确认出牌时 set
+        self._discard_confirmed = False  # 兼容：服务端已确认出牌
         self._action_lock = asyncio.Lock()  # action handler 串行锁
         self._live_handler = None  # 当前局的 live log handler
         # 装弱：第一名时前 N 步用 q_values 带权随机
@@ -823,6 +824,7 @@ class MajsoulBot:
         msg.ParseFromString(data)
 
         self._discard_confirmed = False  # 新一局重置
+        self._discard_event.clear()
 
         gs = self.game_state
         # 直接读 protobuf 属性构造 dict 传给 game_state
@@ -893,6 +895,7 @@ class MajsoulBot:
         gs.on_draw(seat, tile)
         gs.tiles_left = left
         self._discard_confirmed = False  # 重置出牌确认标记
+        self._discard_event.clear()
         display.show_draw(gs, tile)
         # 摸牌后手牌 = gs.hand（已含摸的牌）
         hand_with_draw = list(gs.hand)
@@ -934,6 +937,7 @@ class MajsoulBot:
         if seat == self.game_state.seat:
             logger.info(f"服务端确认自家出牌: {tile} (moqie={is_draw})")
             self._discard_confirmed = True  # 标记已出牌
+            self._discard_event.set()
             # 清除旧的 Mortal 决策缓存，防止重复使用
             if self._is_mortal and hasattr(self.ai, 'clear_last_reaction'):
                 self.ai.clear_last_reaction()
@@ -1035,6 +1039,7 @@ class MajsoulBot:
         # 自家副露后需要出牌，重置确认标记
         if seat == gs.seat:
             self._discard_confirmed = False
+            self._discard_event.clear()
             # 注意：吃/碰后 Mortal 的 _last_reaction 已经是 dahai（要打的牌）
             # 不能 clear，否则 decide_discard 找不到决策会 fallback
 
@@ -1394,6 +1399,11 @@ class MajsoulBot:
                 tile = self.ai.decide_discard(gs)
             is_moqie = (tile == gs.draw)
             await self.client.discard_tile(tile, is_riichi=True, moqie=is_moqie)
+            # 等待服务端确认
+            try:
+                await asyncio.wait_for(self._discard_event.wait(), timeout=8)
+            except asyncio.TimeoutError:
+                logger.warning("⏰ 立直出牌确认超时 (8s)")
         elif action_type in [2, 3, 4, 5, 6]:
             # 吃(2)/碰(3)/暗杠(4)/明杠(5)/加杠(6)
             call = {2: "chi", 3: "pon", 4: "kan", 5: "kan", 6: "kan"}.get(action_type, "?")
@@ -1587,6 +1597,12 @@ class MajsoulBot:
             return
         self.human.on_action()
         await self.client.discard_tile(tile, moqie=is_moqie)
+
+        # 等待服务端确认出牌，防止迟到的 RPC 被当作下一巡操作（错位出牌）
+        try:
+            await asyncio.wait_for(self._discard_event.wait(), timeout=8)
+        except asyncio.TimeoutError:
+            logger.warning("⏰ 出牌确认超时 (8s)，可能被服务端自动摸切")
 
 
 async def main():
