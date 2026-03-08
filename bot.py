@@ -1406,13 +1406,13 @@ class MajsoulBot:
             await self.client.discard_tile(tile, is_riichi=True, moqie=is_moqie)
             # 等待服务端确认
             try:
-                await asyncio.wait_for(self._discard_event.wait(), timeout=8)
+                await asyncio.wait_for(self._discard_event.wait(), timeout=5)
             except asyncio.TimeoutError:
-                logger.warning("⏰ 立直出牌确认超时 (8s)")
+                logger.warning("⏰ 立直出牌确认超时 (5s)")
                 self._fast_discard = max(self._fast_discard, 5)
             else:
                 elapsed = asyncio.get_event_loop().time() - t0
-                if elapsed > 5 and self._fast_discard == 0:
+                if elapsed > 3 and self._fast_discard == 0:
                     self._fast_discard = 5
                     logger.info(f"⚡ 确认延迟 {elapsed:.1f}s，激活快速出牌模式 (5 巡)")
         elif action_type in [2, 3, 4, 5, 6]:
@@ -1617,15 +1617,15 @@ class MajsoulBot:
 
         # 等待服务端确认出牌，防止迟到的 RPC 被当作下一巡操作（错位出牌）
         try:
-            await asyncio.wait_for(self._discard_event.wait(), timeout=8)
+            await asyncio.wait_for(self._discard_event.wait(), timeout=5)
         except asyncio.TimeoutError:
-            logger.warning("⏰ 出牌确认超时 (8s)，可能被服务端自动摸切")
+            logger.warning("⏰ 出牌确认超时 (5s)，可能被服务端自动摸切")
             self._fast_discard = max(self._fast_discard, 5)
             return
 
-        # 确认延迟超过 5s → 网络不稳定，续上快速模式防止下一巡错位
+        # 确认延迟超过 3s → 网络不稳定，续上快速模式防止下一巡错位
         elapsed = asyncio.get_event_loop().time() - t0
-        if elapsed > 5 and self._fast_discard == 0:
+        if elapsed > 3 and self._fast_discard == 0:
             self._fast_discard = 5
             logger.info(f"⚡ 确认延迟 {elapsed:.1f}s，激活快速出牌模式 (5 巡)")
 
