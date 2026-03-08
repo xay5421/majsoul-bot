@@ -791,7 +791,17 @@ class MajsoulBot:
         
         使用 _action_lock 串行化，因为 MSRPCChannel 用 create_task
         分发 hook，多个 action 可能并发到达。
+        
+        _discard_event 在锁外提前 set，避免 _do_discard 持锁等确认时死锁。
         """
+        # ── 锁外快速路径：提前 set _discard_event，解除 _do_discard 的等待 ──
+        if action_name == "ActionDiscardTile" and self.game_state:
+            msg_peek = pb.ActionDiscardTile()
+            msg_peek.ParseFromString(data)
+            if msg_peek.seat == self.game_state.seat:
+                self._discard_confirmed = True
+                self._discard_event.set()
+
         async with self._action_lock:
             if not self.game_state:
                 logger.warning("收到操作但没有游戏状态")
