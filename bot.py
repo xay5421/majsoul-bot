@@ -81,6 +81,7 @@ class MajsoulBot:
         self._is_mortal = (ai_type == "mortal")
         self._discard_event = asyncio.Event()  # 服务端确认出牌时 set
         self._discard_confirmed = False  # 兼容：服务端已确认出牌
+        self._fast_discard = 0  # >0 时跳过 human delay（网络延迟导致出牌错位后自动激活）
         self._action_lock = asyncio.Lock()  # action handler 串行锁
         self._live_handler = None  # 当前局的 live log handler
         # 装弱：第一名时前 N 步用 q_values 带权随机
@@ -964,6 +965,9 @@ class MajsoulBot:
                             f"⚠️ 出牌不一致! Mortal想打={intended} 服务端实际={actual_mjai}({tile}) "
                             f"→ 直接喂正确的 dahai 给 Mortal"
                         )
+                        # 网络延迟导致出牌错位，激活快速出牌模式（跳过 human delay）
+                        self._fast_discard = 5
+                        logger.info(f"⚡ 快速出牌模式激活 (剩余 {self._fast_discard} 巡)")
                     # 直接把实际出的牌告诉 Mortal，不需要重启/重放
                     # Mortal 内部状态会根据这个 dahai 事件自我修正
                     self.ai.send_dahai(seat, tile, is_draw)
@@ -1588,6 +1592,11 @@ class MajsoulBot:
             hand_size=len(gs.hand),
             is_riichi=gs.players[gs.seat].riichi,
         )
+        # 快速出牌模式：网络延迟时跳过 human delay，防止出牌错位
+        if self._fast_discard > 0:
+            delay = 0.3
+            self._fast_discard -= 1
+            logger.info(f"⚡ 快速出牌 (delay={delay}s, 剩余 {self._fast_discard} 巡)")
         display.show_action_decision("discard", display.format_tile(tile))
         logger.info(f"出牌: {tile} ({'摸切' if is_moqie else '手切'}) [手牌: {gs.hand}, draw: {gs.draw}]")
         await asyncio.sleep(delay)
