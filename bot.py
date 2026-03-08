@@ -49,8 +49,9 @@ def _create_ai(config):
     ai_type = config.ai.type
     if ai_type == "mortal":
         from ai.mortal import MortalAI
-        mortal_dir = getattr(config.ai, 'mortal_dir', None)
-        return MortalAI(mortal_dir)
+        mortal_dir = getattr(config.ai, 'mortal_dir', None) or None
+        mortal_weights = getattr(config.ai, 'mortal_weights', None) or None
+        return MortalAI(mortal_dir, mortal_weights)
     elif ai_type == "shanten":
         return ShantenAI()
     else:
@@ -74,6 +75,7 @@ class MajsoulBot:
         self.game_state: GameState | None = None
         self.games_played = 0
         self._running = True
+        self._shutdown_event = asyncio.Event()  # Ctrl+C / SIGTERM 时 set
         self._in_game = False
         self._game_end_event = asyncio.Event()
         self._is_mortal = (ai_type == "mortal")
@@ -86,6 +88,14 @@ class MajsoulBot:
         self._noise_rate = getattr(self.config.ai, 'noise_rate', 0.0)
         self._noise_temperature = getattr(self.config.ai, 'noise_temperature', 2.0)
         self._current_game_log = None  # 当前局日志路径
+
+    async def _interruptible_sleep(self, seconds: float) -> bool:
+        """可被 Ctrl+C 中断的 sleep。返回 True 表示正常完成，False 表示被中断。"""
+        try:
+            await asyncio.wait_for(self._shutdown_event.wait(), timeout=seconds)
+            return False  # shutdown event 被 set → 中断
+        except asyncio.TimeoutError:
+            return True   # 超时 → 正常完成
 
     def _live(self, msg: str) -> None:
         """写入对局实况日志 (game_live.log)"""
@@ -190,7 +200,8 @@ class MajsoulBot:
                 if self._running and self.config.run.max_games != 1:
                     interval = self.human.get_game_interval(self.config.run)
                     logger.info(f"等待 {interval:.0f}s ({interval/60:.1f}分钟) 后继续...")
-                    await asyncio.sleep(interval)
+                    if not await self._interruptible_sleep(interval):
+                        self._running = False
             else:
                 # 重连失败，可能 token 永久失效
                 # 轮询等待残留对局自然结束，然后再开始匹配
@@ -253,14 +264,16 @@ class MajsoulBot:
                         target += datetime.timedelta(days=1)
                     wait_secs = (target - now).total_seconds()
                     logger.info(f"🌙 将在 {target.strftime('%H:%M')} 恢复 (等待 {wait_secs/60:.0f} 分钟)")
-                    await asyncio.sleep(wait_secs)
+                    if not await self._interruptible_sleep(wait_secs):
+                        break
                     continue
 
                 # ── 反检测: session 休息 ──
                 if self.human.should_take_session_break(run_cfg):
                     break_time = self.human.get_session_break(run_cfg)
                     logger.info(f"☕ Session 休息 {break_time:.0f}s ({break_time/60:.1f}分钟)...")
-                    await asyncio.sleep(break_time)
+                    if not await self._interruptible_sleep(break_time):
+                        break
                     logger.info("☕ 休息结束，继续")
 
                 self._game_end_event.clear()
@@ -284,13 +297,15 @@ class MajsoulBot:
                     )
                     if not room_id:
                         logger.error("创建房间失败，等待重试...")
-                        await asyncio.sleep(10)
+                        if not await self._interruptible_sleep(10):
+                            break
                         continue
 
                     success = await self.client.start_room()
                     if not success:
                         logger.error("开始对局失败")
-                        await asyncio.sleep(10)
+                        if not await self._interruptible_sleep(10):
+                            break
                         continue
                 else:
                     try:
@@ -342,11 +357,13 @@ class MajsoulBot:
                             else:
                                 wait = min(30 * (2 ** (self._match1023_count - 1)), 120)
                                 logger.error(f"重连残留对局也失败，等 {wait} 秒再试...")
-                                await asyncio.sleep(wait)
+                                if not await self._interruptible_sleep(wait):
+                                    break
                             continue
                     if not success:
                         logger.error("匹配失败，等待重试...")
-                        await asyncio.sleep(10)
+                        if not await self._interruptible_sleep(10):
+                            break
                         continue
 
                 # 等待对局结束（同时监控断线）
@@ -362,9 +379,12 @@ class MajsoulBot:
                     while (elapsed < match_timeout 
                            and not self._in_game 
                            and not self._game_end_event.is_set()
-                           and not self.client._game_disconnected.is_set()):
+                           and not self.client._game_disconnected.is_set()
+                           and self._running):
                         await asyncio.sleep(poll_interval)
                         elapsed += poll_interval
+                    if not self._running:
+                        break
                     if not self._in_game and not self._game_end_event.is_set():
                         if self.client._game_disconnected.is_set():
                             logger.warning("匹配后连接对局服务器失败，重试匹配...")
@@ -399,7 +419,8 @@ class MajsoulBot:
                     # ── 反检测: 拟人化局间间隔 ──
                     interval = self.human.get_game_interval(run_cfg)
                     logger.info(f"等待 {interval:.0f}s ({interval/60:.1f}分钟) 后继续...")
-                    await asyncio.sleep(interval)
+                    if not await self._interruptible_sleep(interval):
+                        break
 
             heartbeat_task.cancel()
 
@@ -1581,6 +1602,7 @@ async def main():
 
     def _shutdown():
         bot._running = False
+        bot._shutdown_event.set()
         # 取消心跳 task，让事件循环能退出
         if hasattr(bot, '_heartbeat_task') and bot._heartbeat_task:
             bot._heartbeat_task.cancel()

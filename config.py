@@ -23,6 +23,7 @@ class AIConfig:
     command: str = ""         # mjai_subprocess: AI 程序命令
     url: str = ""             # mjai_http: AI 服务器地址
     mortal_dir: str = ""      # mortal: Mortal 目录路径
+    mortal_weights: str = ""  # mortal: 模型权重路径 (.pth)，留空用 config.toml 默认值
     nerf_turns: int = 0       # 装弱：第一名时前 N 步用 q_values 随机采样（0=关闭）
     noise_rate: float = 0.0   # 全局扰动：每手牌有此概率打次优牌（0.0-1.0，推荐 0.05-0.08）
     noise_temperature: float = 0.5  # 扰动温度：越高越随机（0.3=几乎只选第2优, 0.5=推荐, 1.0=较随机）

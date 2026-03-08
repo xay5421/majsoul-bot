@@ -55,9 +55,14 @@ class MortalAI(BaseAI):
     使用 mjai 协议 (stdin/stdout JSON lines)。
     """
 
-    def __init__(self, mortal_dir: str | None = None):
+    def __init__(self, mortal_dir: str | None = None, mortal_weights: str | None = None):
         mortal_dir = mortal_dir or self._find_mortal_dir()
-        self.mortal_dir = Path(mortal_dir)
+        # 展开 ~ 和环境变量
+        self.mortal_dir = Path(os.path.expanduser(mortal_dir)).resolve()
+        self.mortal_weights = (
+            Path(os.path.expanduser(mortal_weights)).resolve()
+            if mortal_weights else None
+        )
         self.process: subprocess.Popen | None = None
         self.player_id: int = 0
         self._last_reaction: dict | None = None
@@ -72,14 +77,18 @@ class MortalAI(BaseAI):
     def _find_mortal_dir() -> str:
         """自动查找 Mortal 目录"""
         project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        home = os.path.expanduser("~")
         candidates = [
-            os.path.join(project_dir, "Mortal", "mortal"),  # 项目内
+            os.path.join(project_dir, "Mortal", "mortal"),       # 项目内
+            os.path.join(home, "workspace", "Mortal", "mortal"), # ~/workspace
+            os.path.join(project_dir, "..", "Mortal", "mortal"), # 同级目录
         ]
         for d in candidates:
             if os.path.isfile(os.path.join(d, "mortal.py")):
                 return d
         raise FileNotFoundError(
-            "找不到 Mortal 目录，请在 config.yaml 中设置 ai.mortal_dir"
+            "找不到 Mortal 目录，请在 config.yaml 中设置 ai.mortal_dir，"
+            "指向包含 mortal.py 和 mortal.pth 的目录"
         )
 
     def _force_fallback(self):
@@ -112,9 +121,34 @@ class MortalAI(BaseAI):
             self.process.kill()
 
         env = os.environ.copy()
-        env["MORTAL_CFG"] = "config.toml"
         # 确保 libriichi.so 在路径中
         env["PYTHONPATH"] = str(self.mortal_dir)
+
+        # 如果指定了自定义权重，生成临时 config.toml
+        if self.mortal_weights:
+            cfg_path = self.mortal_dir / "config.toml"
+            if cfg_path.exists():
+                # 读取原始 config，替换 state_file 行
+                with open(cfg_path, encoding="utf-8") as f:
+                    lines = f.readlines()
+                new_lines = []
+                for line in lines:
+                    if line.strip().startswith("state_file"):
+                        new_lines.append(f"state_file = '{self.mortal_weights}'\n")
+                    else:
+                        new_lines.append(line)
+                tmp_cfg = self.mortal_dir / ".config.bot.toml"
+                with open(tmp_cfg, "w", encoding="utf-8") as f:
+                    f.writelines(new_lines)
+            else:
+                # 没有原始 config，生成最小配置
+                tmp_cfg = self.mortal_dir / ".config.bot.toml"
+                with open(tmp_cfg, "w", encoding="utf-8") as f:
+                    f.write(f"[control]\nstate_file = '{self.mortal_weights}'\n")
+            env["MORTAL_CFG"] = str(tmp_cfg)
+            logger.info(f"Mortal 使用自定义权重: {self.mortal_weights}")
+        else:
+            env["MORTAL_CFG"] = "config.toml"
 
         # 优先用 Mortal 自己的 venv python（有独立依赖）
         mortal_python = self.mortal_dir / ".venv" / "bin" / "python"

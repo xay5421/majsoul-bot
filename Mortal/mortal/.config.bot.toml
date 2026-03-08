@@ -1,0 +1,7 @@
+[control]
+version = 4
+state_file = '/home/ubuntu/workspace/naive_mortal.pth'
+
+[resnet]
+conv_channels = 256
+num_blocks = 54
