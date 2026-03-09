@@ -92,13 +92,13 @@ class HumanBehavior:
         # 普通出牌：根据巡目动态调整
         if self._turn_count < 3:
             # 开局几巡，配牌阶段思考多
-            return self._jitter(1.5, 4.0)
+            return self._jitter(1.5, 3.0)
         elif self._turn_count > 12:
             # 终盘，紧张/着急
             return self._jitter(0.8, 3.0)
         else:
             # 中盘，正常思考
-            return self._jitter(1.0, 3.5)
+            return self._jitter(1.0, 3.0)
 
     def get_call_delay(self, call_type: str = "pon") -> float:
         """吃碰杠荣和延迟
@@ -111,11 +111,11 @@ class HumanBehavior:
         if call_type in ("ron", "tsumo"):
             return self._jitter(0.5, 2.0)
         elif call_type == "pon":
-            return self._jitter(1.0, 3.0)
+            return self._jitter(1.0, 3.1)
         elif call_type == "kan":
             return self._jitter(0.8, 2.5)
         elif call_type == "chi":
-            return self._jitter(1.0, 4.0)
+            return self._jitter(1.0, 3.1)
         return self._jitter(1.0, 3.0)
 
     def get_skip_delay(self) -> float:
@@ -130,14 +130,14 @@ class HumanBehavior:
 
         立直是大决策，真人通常想 2-5 秒
         """
-        return self._jitter(1.5, 4.5)
+        return self._jitter(1.5, 3.5)
 
     def get_new_round_delay(self) -> float:
         """新一局确认延迟
 
         看结算画面 + 点确认
         """
-        return self._jitter(2.0, 5.0)
+        return self._jitter(2.0, 4.0)
 
     def get_game_interval(self, config) -> float:
         """局间间隔（两局之间的等待时间）
