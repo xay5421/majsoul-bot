@@ -1361,6 +1361,9 @@ class MajsoulClient:
 
         操作码: type=1 正常出牌, type=7 立直出牌
         """
+        if not self.fast_test:
+            logger.warning(f"discard_tile 跳过: fast_test=None (对局已结束)")
+            return
         req = pb.ReqSelfOperation()
         req.type = 1  # 正常出牌
         req.tile = tile
@@ -1374,12 +1377,18 @@ class MajsoulClient:
 
     async def skip_action(self) -> None:
         """跳过操作（不吃碰杠）"""
+        if not self.fast_test:
+            logger.warning("skip_action 跳过: fast_test=None (对局已结束)")
+            return
         req = pb.ReqSelfOperation()
         req.cancel_operation = True
         await self.fast_test.input_operation(req)
 
     async def win(self, action_type: int = 8) -> None:
         """和牌 (自摸=8, 荣和=9)"""
+        if not self.fast_test:
+            logger.warning("win 跳过: fast_test=None (对局已结束)")
+            return
         req = pb.ReqSelfOperation()
         req.type = action_type
         logger.debug(f"发送和牌: type={action_type}")
@@ -1392,6 +1401,9 @@ class MajsoulClient:
         ReqSelfOperation 没有 combination 字段。
         服务端根据 type + index 来确定操作。
         """
+        if not self.fast_test:
+            logger.warning("chi_peng_gang 跳过: fast_test=None (对局已结束)")
+            return
         req = pb.ReqSelfOperation()
         req.type = action_type
         req.index = index

@@ -807,6 +807,16 @@ class MajsoulBot:
                 logger.warning("收到操作但没有游戏状态")
                 return
 
+            # 对局已结束（_on_game_end 跑完了），积压的 action 不再处理
+            if self._game_end_event.is_set():
+                logger.debug(f"对局已结束，跳过积压的 {action_name}")
+                return
+
+            # fast_test 已被清空（game server 断开），无法发送 RPC
+            if not self.client.fast_test:
+                logger.debug(f"fast_test=None，跳过 {action_name}")
+                return
+
             try:
                 if action_name == "ActionNewRound":
                     await self._handle_new_round(data)
@@ -1620,6 +1630,10 @@ class MajsoulBot:
         # delay 之后再检查一次（防止 delay 期间服务端超时自动出牌）
         if self._discard_confirmed:
             logger.info("delay 期间服务端已出牌，取消本次出牌")
+            return
+        # 最终检查：对局是否已结束 / fast_test 是否已清空
+        if self._game_end_event.is_set() or not self.client.fast_test:
+            logger.info("出牌前对局已结束，取消出牌")
             return
         self.human.on_action()
         t0 = asyncio.get_event_loop().time()
