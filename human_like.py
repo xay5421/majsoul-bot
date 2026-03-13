@@ -84,21 +84,21 @@ class HumanBehavior:
         """
         if is_riichi:
             # 立直后自动摸切，只需确认
-            return self._jitter(0.4, 1.2)
+            return self._jitter(0.3, 0.8)
         if is_tsumogiri:
             # 摸切：看一眼就打，但也不能太快
-            return self._jitter(0.5, 1.8)
+            return self._jitter(0.3, 1.2)
 
         # 普通出牌：根据巡目动态调整
         if self._turn_count < 3:
             # 开局几巡，配牌阶段思考多
-            return self._jitter(1.5, 3.0)
+            return self._jitter(1.0, 2.0)
         elif self._turn_count > 12:
             # 终盘，紧张/着急
-            return self._jitter(0.8, 3.0)
+            return self._jitter(0.5, 2.0)
         else:
             # 中盘，正常思考
-            return self._jitter(1.0, 3.0)
+            return self._jitter(0.7, 2.0)
 
     def get_call_delay(self, call_type: str = "pon") -> float:
         """吃碰杠荣和延迟
@@ -109,35 +109,35 @@ class HumanBehavior:
         - 吃: 1-4s (更要想)
         """
         if call_type in ("ron", "tsumo"):
-            return self._jitter(0.5, 2.0)
+            return self._jitter(0.3, 1.3)
         elif call_type == "pon":
-            return self._jitter(1.0, 3.1)
+            return self._jitter(0.7, 2.1)
         elif call_type == "kan":
-            return self._jitter(0.8, 2.5)
+            return self._jitter(0.5, 1.7)
         elif call_type == "chi":
-            return self._jitter(1.0, 3.1)
-        return self._jitter(1.0, 3.0)
+            return self._jitter(0.7, 2.1)
+        return self._jitter(0.7, 2.0)
 
     def get_skip_delay(self) -> float:
         """跳过操作延迟
 
         真人看到别人出牌后，即使不吃碰也要扫一眼
         """
-        return self._jitter(0.3, 1.5)
+        return self._jitter(0.2, 1.0)
 
     def get_riichi_delay(self) -> float:
         """立直决策延迟
 
         立直是大决策，真人通常想 2-5 秒
         """
-        return self._jitter(1.5, 3.5)
+        return self._jitter(1.0, 2.3)
 
     def get_new_round_delay(self) -> float:
         """新一局确认延迟
 
         看结算画面 + 点确认
         """
-        return self._jitter(2.0, 4.0)
+        return self._jitter(1.3, 2.7)
 
     def get_game_interval(self, config) -> float:
         """局间间隔（两局之间的等待时间）
