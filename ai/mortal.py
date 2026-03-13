@@ -71,6 +71,7 @@ class MortalAI(BaseAI):
         self._game_active = False
         self._mjai_log: list[str] = []  # 记录所有发送给 Mortal 的事件
         self._intended_tile: str | None = None  # Mortal 上次决定要打的牌 (mjai 格式)
+        self._state_synced: bool = False  # send_tsumo 中已用决策的 dahai 更新了 Mortal state
         logger.info(f"MortalAI: mortal_dir={self.mortal_dir}")
 
     @staticmethod
@@ -331,7 +332,17 @@ class MortalAI(BaseAI):
         logger.info("Mortal AI 已关闭")
 
     def send_tsumo(self, actor: int, tile: str | None) -> dict | None:
-        """发送摸牌事件"""
+        """发送摸牌事件
+        
+        当 Mortal 返回 dahai 决策时，立即再发一次该 dahai 给 Mortal
+        更新其内部 state（从手牌移除出的牌）。这样即使服务端最终确认
+        的出牌和 Mortal 的决策不一致（超时摸切等），Mortal 的手牌
+        跟踪也不会脱节。
+        
+        设置 self._state_synced = True 标记 state 已通过决策的 dahai
+        更新过，_handle_discard_tile 就不需要再发一次 dahai 了。
+        """
+        self._state_synced = False
         event = {
             "type": "tsumo",
             "actor": actor,
@@ -343,6 +354,16 @@ class MortalAI(BaseAI):
         if actor == self.player_id:
             if reaction and reaction.get("type") == "dahai":
                 self._intended_tile = reaction["pai"]
+                # 立即发 dahai 给 Mortal 更新 state，防止不一致时手牌脱节
+                intended_pai = reaction["pai"]
+                intended_tsumogiri = reaction.get("tsumogiri", False)
+                self._send_and_collect({
+                    "type": "dahai",
+                    "actor": actor,
+                    "pai": intended_pai,
+                    "tsumogiri": intended_tsumogiri,
+                })
+                self._state_synced = True
             elif reaction and reaction.get("type") == "reach":
                 # reach 的情况下后续会有 dahai
                 pass
@@ -357,6 +378,14 @@ class MortalAI(BaseAI):
             dahai = self._send_and_collect(reach_event)
             if dahai and dahai.get("type") == "dahai":
                 self._intended_tile = dahai["pai"]
+                # 立即发 dahai 给 Mortal 更新 state
+                self._send_and_collect({
+                    "type": "dahai",
+                    "actor": actor,
+                    "pai": dahai["pai"],
+                    "tsumogiri": dahai.get("tsumogiri", False),
+                })
+                self._state_synced = True
                 # 合并立直信息到 _last_reaction
                 self._last_reaction = {
                     "type": "reach_dahai",
@@ -392,24 +421,46 @@ class MortalAI(BaseAI):
     def send_chi(self, actor: int, target: int, pai: str,
                  consumed: list[str]) -> dict | None:
         """发送吃"""
-        return self._send_and_collect({
+        reaction = self._send_and_collect({
             "type": "chi",
             "actor": actor,
             "target": target,
             "pai": ms_to_mjai(pai),
             "consumed": [ms_to_mjai(t) for t in consumed],
         })
+        # 自家吃后 Mortal 会返回 dahai，立即同步 state
+        if actor == self.player_id and reaction and reaction.get("type") == "dahai":
+            self._intended_tile = reaction["pai"]
+            self._send_and_collect({
+                "type": "dahai",
+                "actor": actor,
+                "pai": reaction["pai"],
+                "tsumogiri": reaction.get("tsumogiri", False),
+            })
+            self._state_synced = True
+        return reaction
 
     def send_pon(self, actor: int, target: int, pai: str,
                  consumed: list[str]) -> dict | None:
         """发送碰"""
-        return self._send_and_collect({
+        reaction = self._send_and_collect({
             "type": "pon",
             "actor": actor,
             "target": target,
             "pai": ms_to_mjai(pai),
             "consumed": [ms_to_mjai(t) for t in consumed],
         })
+        # 自家碰后 Mortal 会返回 dahai，立即同步 state
+        if actor == self.player_id and reaction and reaction.get("type") == "dahai":
+            self._intended_tile = reaction["pai"]
+            self._send_and_collect({
+                "type": "dahai",
+                "actor": actor,
+                "pai": reaction["pai"],
+                "tsumogiri": reaction.get("tsumogiri", False),
+            })
+            self._state_synced = True
+        return reaction
 
     def send_daiminkan(self, actor: int, target: int, pai: str,
                        consumed: list[str]) -> dict | None:

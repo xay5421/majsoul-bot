@@ -967,40 +967,57 @@ class MajsoulBot:
 
         # 通知 Mortal AI（包括立直宣言，所有玩家的出牌都要通知）
         if self._is_mortal:
-            if is_riichi:
-                self.ai.send_reach(seat)
-            
-            # 检测自家出牌不一致：装弱/服务端超时摸切导致实际出牌和 Mortal 决策不同
-            if seat == gs.seat and hasattr(self.ai, '_intended_tile') and self.ai._intended_tile:
-                from ai.mortal import ms_to_mjai, mjai_to_ms
-                intended = self.ai._intended_tile
+            if seat == gs.seat:
+                # 自家出牌：检查 state 是否已在 send_tsumo/send_chi/send_pon 中同步
+                from ai.mortal import ms_to_mjai
                 actual_mjai = ms_to_mjai(tile)
-                if intended != actual_mjai:
-                    if self._nerf_active:
-                        logger.debug(
-                            f"🤡 装弱修正: Mortal想打={intended} 实际={actual_mjai}"
-                        )
-                    else:
+                intended = getattr(self.ai, '_intended_tile', None)
+                state_synced = getattr(self.ai, '_state_synced', False)
+                
+                if state_synced:
+                    # state 已同步：不需要再发 reach/dahai 给 Mortal
+                    # reach 和 dahai 都已在 send_tsumo 中处理完毕
+                    if intended and intended != actual_mjai:
+                        if self._nerf_active:
+                            logger.debug(
+                                f"🤡 装弱修正: Mortal想打={intended} 实际={actual_mjai} (state已同步)"
+                            )
+                        else:
+                            logger.warning(
+                                f"⚠️ 出牌不一致! Mortal想打={intended} 服务端实际={actual_mjai}({tile}) "
+                                f"(state已同步，Mortal河记录有偏差但手牌正确)"
+                            )
+                            self._fast_discard = 5
+                            logger.info(f"⚡ 快速出牌模式激活 (剩余 {self._fast_discard} 巡)")
+                    # 只需要发 reach_accepted（如果立直）
+                    if is_riichi:
+                        self.ai.send_reach_accepted(seat)
+                    self.ai._intended_tile = None
+                    self.ai._state_synced = False
+                    self._nerf_active = False
+                else:
+                    # state 未同步（fallback 路径）
+                    if is_riichi:
+                        self.ai.send_reach(seat)
+                    if intended and intended != actual_mjai:
                         logger.warning(
                             f"⚠️ 出牌不一致! Mortal想打={intended} 服务端实际={actual_mjai}({tile}) "
                             f"→ 直接喂正确的 dahai 给 Mortal"
                         )
-                        # 网络延迟导致出牌错位，激活快速出牌模式（跳过 human delay）
                         self._fast_discard = 5
                         logger.info(f"⚡ 快速出牌模式激活 (剩余 {self._fast_discard} 巡)")
-                    # 直接把实际出的牌告诉 Mortal，不需要重启/重放
-                    # Mortal 内部状态会根据这个 dahai 事件自我修正
                     self.ai.send_dahai(seat, tile, is_draw)
+                    if is_riichi:
+                        self.ai.send_reach_accepted(seat)
                     self.ai._intended_tile = None
-                else:
-                    self.ai._intended_tile = None
-                    self.ai.send_dahai(seat, tile, is_draw)
-                self._nerf_active = False
+                    self._nerf_active = False
             else:
+                # 他家出牌：正常通知
+                if is_riichi:
+                    self.ai.send_reach(seat)
                 self.ai.send_dahai(seat, tile, is_draw)
-            
-            if is_riichi:
-                self.ai.send_reach_accepted(seat)
+                if is_riichi:
+                    self.ai.send_reach_accepted(seat)
 
         gs.on_discard(seat, tile, is_draw, is_riichi)
         display.show_discard(gs, seat, tile, is_tsumogiri=is_draw, is_riichi=is_riichi)
