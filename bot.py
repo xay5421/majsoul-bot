@@ -10,7 +10,7 @@ import sys
 import ms.protocol_pb2 as pb
 from google.protobuf.json_format import MessageToDict
 
-from client import MajsoulClient, MatchError1023, _get_git_commit
+from client import MajsoulClient, MatchError1023, MatchError1304, _get_git_commit
 from codec import decode as xor_decode
 from config import load_config
 from game_state import GameState
@@ -318,6 +318,10 @@ class MajsoulBot:
                     except MatchError1023:
                         self._match1023_count = getattr(self, '_match1023_count', 0) + 1
                         logger.warning(f"账号仍在对局中 (1023)，第 {self._match1023_count} 次，尝试重连残留对局...")
+                    except MatchError1304:
+                        logger.error("💰 铜币不足 (code=1304)，停止匹配")
+                        self._live("💰 铜币不足，停止匹配")
+                        break
                         reconnected = await self.client.check_and_reconnect_game()
                         if reconnected:
                             logger.info("已重连残留对局，等待对局结束...")

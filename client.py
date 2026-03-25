@@ -23,6 +23,11 @@ class MatchError1023(Exception):
     pass
 
 
+class MatchError1304(Exception):
+    """匹配失败：铜币不足 (error code 1304)"""
+    pass
+
+
 class ConnectionState(enum.Enum):
     """对局连接状态"""
     IDLE = "idle"                  # 未在对局
@@ -980,6 +985,8 @@ class MajsoulClient:
             logger.error(f"完整响应: {MessageToDict(res, preserving_proto_field_name=True)}")
             if error_code == 1023:
                 raise MatchError1023("账号仍在对局中，无法匹配")
+            if error_code == 1304:
+                raise MatchError1304("铜币不足，无法匹配")
             return False
 
         logger.info("匹配请求已发送，等待对手...")
