@@ -318,10 +318,6 @@ class MajsoulBot:
                     except MatchError1023:
                         self._match1023_count = getattr(self, '_match1023_count', 0) + 1
                         logger.warning(f"账号仍在对局中 (1023)，第 {self._match1023_count} 次，尝试重连残留对局...")
-                    except MatchError1304:
-                        logger.error("💰 铜币不足 (code=1304)，停止匹配")
-                        self._live("💰 铜币不足，停止匹配")
-                        break
                         reconnected = await self.client.check_and_reconnect_game()
                         if reconnected:
                             logger.info("已重连残留对局，等待对局结束...")
@@ -366,6 +362,10 @@ class MajsoulBot:
                                 if not await self._interruptible_sleep(wait):
                                     break
                             continue
+                    except MatchError1304:
+                        logger.error("💰 铜币不足 (code=1304)，停止匹配")
+                        self._live("💰 铜币不足，停止匹配")
+                        break
                     if not success:
                         logger.error("匹配失败，等待重试...")
                         if not await self._interruptible_sleep(10):
@@ -1062,11 +1062,18 @@ class MajsoulBot:
 
         # 通知 Mortal AI
         if self._is_mortal:
-            # froms 里找到被吃/碰的来源
-            target = froms[-1] if froms else (seat - 1) % gs.player_count
-            # tiles 里最后一张是被吃/碰的牌
-            pai = tiles[-1] if tiles else ""
-            consumed = tiles[:-1] if tiles else []
+            # froms 里找到不是自家的来源 = 被吃/碰的牌的提供者
+            target = (seat - 1) % gs.player_count  # fallback
+            pai = tiles[0] if tiles else ""
+            consumed = []
+            for i, f in enumerate(froms):
+                if f != seat:
+                    target = f
+                    pai = tiles[i]
+                else:
+                    consumed.append(tiles[i])
+            if not consumed:
+                consumed = tiles[:-1] if tiles else []
             if type_ == 0:  # 吃
                 self.ai.send_chi(seat, target, pai, consumed)
             elif type_ == 1:  # 碰
@@ -1269,6 +1276,10 @@ class MajsoulBot:
         display.show_ryuukyoku(self.game_state, reason)
         self._live(f"🌊 {reason}")
 
+        if self._is_mortal:
+            self.ai.send_ryukyoku()
+            self.ai.send_end_kyoku()
+
         delay = self.human.get_new_round_delay()
         await asyncio.sleep(delay)
         try:
@@ -1277,35 +1288,52 @@ class MajsoulBot:
             logger.debug(f"confirm_new_round: {e}")
 
     async def _on_game_end(self, data: bytes) -> None:
-        """对局结束 — 使用 _action_lock 防止和 action handler 并发"""
+        """对局结束 — 使用 _action_lock 防止和 action handler 并发
+        
+        同时处理 NotifyGameEndResult（正常结束）和 NotifyGameTerminate（异常终止）。
+        """
         async with self._action_lock:
             self._in_game = False
 
             try:
+                # 先尝试 NotifyGameEndResult（正常结束，有分数信息）
                 msg = pb.NotifyGameEndResult()
                 msg.ParseFromString(data)
                 d = MessageToDict(msg, preserving_proto_field_name=True)
                 players = d.get('result', {}).get('players', [])
-                scores = [0] * (self.game_state.player_count if self.game_state else 4)
-                for p in players:
-                    seat = p.get('seat', 0)
-                    if seat < len(scores):
-                        scores[seat] = p.get('total_point', 0)
-                display.show_game_end(self.game_state, scores)
-                # 获取最后一局的原始分数（来自 game_state）
-                raw_scores = None
-                if self.game_state and hasattr(self.game_state, 'scores'):
-                    raw_scores = list(self.game_state.scores)
-                # 写入实况日志 - scores 是 uma 调整后的最终分数
-                ranked = sorted(enumerate(scores), key=lambda x: -x[1])
-                lines = ["🏁 对局结束!"]
-                if raw_scores:
-                    lines.append(f"  原始分数: " + " / ".join(f"P{i}:{raw_scores[i]}" for i in range(len(raw_scores))))
-                lines.append(f"  最终得点 (uma调整后):")
-                for rank, (i, sc) in enumerate(ranked):
-                    me = " ← 自家" if self.game_state and i == self.game_state.seat else ""
-                    lines.append(f"    第{rank+1}名 P{i}: {sc:+d}{me}")
-                self._live("\n         │ ".join(lines))
+                
+                if not players:
+                    # 可能是 NotifyGameTerminate（异常终止），尝试另一种消息
+                    try:
+                        tmsg = pb.NotifyGameTerminate()
+                        tmsg.ParseFromString(data)
+                        td = MessageToDict(tmsg, preserving_proto_field_name=True)
+                        reason = td.get('reason', '未知原因')
+                        logger.info(f"🏁 对局异常终止: {reason}")
+                        self._live(f"🏁 对局异常终止: {reason}")
+                    except Exception:
+                        logger.info("🏁 对局结束!")
+                else:
+                    scores = [0] * (self.game_state.player_count if self.game_state else 4)
+                    for p in players:
+                        seat = p.get('seat', 0)
+                        if seat < len(scores):
+                            scores[seat] = p.get('total_point', 0)
+                    display.show_game_end(self.game_state, scores)
+                    # 获取最后一局的原始分数（来自 game_state）
+                    raw_scores = None
+                    if self.game_state and hasattr(self.game_state, 'scores'):
+                        raw_scores = list(self.game_state.scores)
+                    # 写入实况日志 - scores 是 uma 调整后的最终分数
+                    ranked = sorted(enumerate(scores), key=lambda x: -x[1])
+                    lines = ["🏁 对局结束!"]
+                    if raw_scores:
+                        lines.append(f"  原始分数: " + " / ".join(f"P{i}:{raw_scores[i]}" for i in range(len(raw_scores))))
+                    lines.append(f"  最终得点 (uma调整后):")
+                    for rank, (i, sc) in enumerate(ranked):
+                        me = " ← 自家" if self.game_state and i == self.game_state.seat else ""
+                        lines.append(f"    第{rank+1}名 P{i}: {sc:+d}{me}")
+                    self._live("\n         │ ".join(lines))
             except Exception:
                 logger.info("🏁 对局结束!")
 

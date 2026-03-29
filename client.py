@@ -190,7 +190,9 @@ class MajsoulClient:
         logger.info(f"连接网关: {endpoint}")
         self.channel = MSRPCChannel(endpoint)
         self.lobby = Lobby(self.channel)
-        self.fast_test = FastTest(self.channel)
+        # 注意: 不在这里设 self.fast_test — fast_test 属于 game channel，
+        # 在 _connect_game_server 认证成功后才设置。
+        # connect() 可能被 reconnect_lobby() 调用，覆盖 fast_test 会破坏进行中的对局。
         self.route = Route(self.channel)  # Route 服务绑定到同一个 channel
 
         await self.channel.connect(MS_HOST)
