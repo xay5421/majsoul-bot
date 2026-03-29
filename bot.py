@@ -76,7 +76,6 @@ class MajsoulBot:
         self._game_end_event = asyncio.Event()
         self._is_mortal = (ai_type == "mortal")
         self._discard_event = asyncio.Event()  # 服务端确认出牌时 set
-        self._discard_confirmed = False  # 兼容：服务端已确认出牌
         self._fast_discard = 0  # >0 时跳过 human delay（网络延迟导致出牌错位后自动激活）
         self._action_lock = asyncio.Lock()  # action handler 串行锁
         self._live_handler = None  # 当前局的 live log handler
@@ -793,7 +792,6 @@ class MajsoulBot:
             msg_peek = pb.ActionDiscardTile()
             msg_peek.ParseFromString(data)
             if msg_peek.seat == self.game_state.seat:
-                self._discard_confirmed = True
                 self._discard_event.set()
 
         async with self._action_lock:
@@ -838,8 +836,7 @@ class MajsoulBot:
         msg = pb.ActionNewRound()
         msg.ParseFromString(data)
 
-        self._discard_confirmed = False  # 新一局重置
-        self._discard_event.clear()
+        self._discard_event.clear()  # 新一局重置
 
         gs = self.game_state
         # 直接读 protobuf 属性构造 dict 传给 game_state
@@ -909,8 +906,7 @@ class MajsoulBot:
 
         gs.on_draw(seat, tile)
         gs.tiles_left = left
-        self._discard_confirmed = False  # 重置出牌确认标记
-        self._discard_event.clear()
+        self._discard_event.clear()  # 重置出牌确认标记
         display.show_draw(gs, tile)
         # 摸牌后手牌 = gs.hand（已含摸的牌）
         hand_with_draw = list(gs.hand)
@@ -951,8 +947,7 @@ class MajsoulBot:
 
         if seat == self.game_state.seat:
             logger.info(f"服务端确认自家出牌: {tile} (moqie={is_draw})")
-            self._discard_confirmed = True  # 标记已出牌
-            self._discard_event.set()
+            self._discard_event.set()  # 标记已出牌
             # 清除旧的 Mortal 决策缓存，防止重复使用
             if self._is_mortal and hasattr(self.ai, 'clear_last_reaction'):
                 self.ai.clear_last_reaction()
@@ -1080,7 +1075,6 @@ class MajsoulBot:
 
         # 自家副露后需要出牌，重置确认标记
         if seat == gs.seat:
-            self._discard_confirmed = False
             self._discard_event.clear()
             # 注意：吃/碰后 Mortal 的 _last_reaction 已经是 dahai（要打的牌）
             # 不能 clear，否则 decide_discard 找不到决策会 fallback
@@ -1583,7 +1577,7 @@ class MajsoulBot:
             return
 
         # 检查服务端是否已经替我们出牌（超时自动摸切）
-        if self._discard_confirmed:
+        if self._discard_event.is_set():
             logger.info("服务端已确认出牌，跳过本次出牌")
             return
 
@@ -1656,7 +1650,7 @@ class MajsoulBot:
         logger.info(f"出牌: {tile} ({'摸切' if is_moqie else '手切'}) [手牌: {gs.hand}, draw: {gs.draw}]")
         await asyncio.sleep(delay)
         # delay 之后再检查一次（防止 delay 期间服务端超时自动出牌）
-        if self._discard_confirmed:
+        if self._discard_event.is_set():
             logger.info("delay 期间服务端已出牌，取消本次出牌")
             return
         # 最终检查：对局是否已结束 / fast_test 是否已清空
