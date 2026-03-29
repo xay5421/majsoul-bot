@@ -85,7 +85,6 @@ class MajsoulBot:
         self._nerf_active = False  # 本次出牌是否为装弱采样
         self._noise_rate = getattr(self.config.ai, 'noise_rate', 0.0)
         self._noise_temperature = getattr(self.config.ai, 'noise_temperature', 2.0)
-        self._current_game_log = None  # 当前局日志路径
 
     async def _relogin_check_residual(self) -> bool | None:
         """重新登录并检查残留对局。
@@ -133,7 +132,6 @@ class MajsoulBot:
             "%(asctime)s │ %(message)s", datefmt="%H:%M:%S",
         ))
         self._live_log.addHandler(self._live_handler)
-        self._current_game_log = log_path
         logger.info(f"对局日志: {log_path}")
 
     def _stop_game_live_log(self) -> None:
