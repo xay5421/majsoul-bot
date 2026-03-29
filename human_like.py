@@ -1,6 +1,5 @@
 """人类行为模拟 — 操作延迟 + 节奏控制 + 行为变异"""
 import random
-import time
 import logging
 
 logger = logging.getLogger("majsoul.human")
@@ -20,7 +19,6 @@ class HumanBehavior:
         self._tempo: float = 1.0          # 当前节奏因子 (0.7~1.5)
         self._round_count: int = 0        # 当前对局内的局数
         self._fatigue: float = 0.0        # 疲劳度 (0~1)
-        self._last_action_time: float = 0
         self._turn_count: int = 0         # 当前局内巡目
         self._session_games: int = 0      # 当前 session 打了几局
 
@@ -45,7 +43,6 @@ class HumanBehavior:
     def on_action(self) -> None:
         """每次操作后"""
         self._turn_count += 1
-        self._last_action_time = time.monotonic()
 
     def _jitter(self, base_min: float, base_max: float,
                 tempo_factor: bool = True) -> float:

@@ -5,13 +5,11 @@ import logging
 import os
 import random
 import signal
-import sys
 
 import ms.protocol_pb2 as pb
 from google.protobuf.json_format import MessageToDict
 
-from client import MajsoulClient, MatchError1023, MatchError1304, _get_git_commit
-from codec import decode as xor_decode
+from client import MajsoulClient, MatchError1023, MatchError1304, _get_git_commit, format_rank
 from config import load_config
 from game_state import GameState
 from ai.basic import BasicAI
@@ -21,8 +19,6 @@ import display
 from tiles import tile_to_str, tiles_to_str, sort_tiles
 
 logger = logging.getLogger("majsoul")
-
-WIND = ['东', '南', '西', '北']
 
 
 def _shanten_str(tiles: list[str], num_melds: int = 0) -> str:
@@ -90,6 +86,26 @@ class MajsoulBot:
         self._noise_rate = getattr(self.config.ai, 'noise_rate', 0.0)
         self._noise_temperature = getattr(self.config.ai, 'noise_temperature', 2.0)
         self._current_game_log = None  # 当前局日志路径
+
+    async def _relogin_check_residual(self) -> bool | None:
+        """重新登录并检查残留对局。
+        Returns: True=对局还在, False=对局已消失, None=登录失败
+        """
+        try:
+            if not await self.client.reconnect_lobby():
+                logger.error("重新登录失败")
+                return None
+            gi = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
+            gd = MessageToDict(gi, preserving_proto_field_name=True)
+            still_in = bool(gd.get("game_info", {}).get("connect_token"))
+            if still_in:
+                logger.warning("重新登录后对局仍在（可能是幽灵对局）")
+            else:
+                logger.info("重新登录后对局已结束")
+            return still_in
+        except Exception as e:
+            logger.error(f"重新登录失败: {e}")
+            return None
 
     async def _interruptible_sleep(self, seconds: float) -> bool:
         """可被 Ctrl+C 中断的 sleep。返回 True 表示正常完成，False 表示被中断。"""
@@ -217,21 +233,10 @@ class MajsoulBot:
                         poll_interval=15, timeout=900
                     )
                     if not cleared:
-                        logger.warning("等待残留对局超时，重新登录检查...")
-                        try:
-                            if await self.client.reconnect_lobby():
-                                gi2 = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
-                                gd2 = MessageToDict(gi2, preserving_proto_field_name=True)
-                                if gd2.get("game_info", {}).get("connect_token"):
-                                    logger.warning("重新登录后对局仍在（可能是幽灵对局），强制进入主循环尝试匹配")
-                                else:
-                                    logger.info("重新登录后对局已结束，继续")
-                            else:
-                                logger.error("重新登录失败，退出")
-                                return
-                        except Exception as e:
-                            logger.error(f"重新登录失败: {e}，退出")
+                        result = await self._relogin_check_residual()
+                        if result is None:
                             return
+                        # result=True (幽灵对局) 或 False (已结束) 都继续进入主循环
 
             # 主循环
             max_games = self.config.run.max_games
@@ -339,23 +344,11 @@ class MajsoulBot:
                                     logger.info("残留对局已结束，恢复匹配")
                                     continue
                                 else:
-                                    logger.warning("等待残留对局超时，重新登录检查...")
-                                    try:
-                                        if await self.client.reconnect_lobby():
-                                            gi2 = await self.client.lobby.fetch_gaming_info(pb.ReqCommon())
-                                            gd2 = MessageToDict(gi2, preserving_proto_field_name=True)
-                                            if gd2.get("game_info", {}).get("connect_token"):
-                                                logger.warning("重新登录后对局仍在（幽灵对局），重置计数继续匹配")
-                                            else:
-                                                logger.info("重新登录后对局已结束，恢复匹配")
-                                            self._match1023_count = 0
-                                            continue
-                                        else:
-                                            logger.error("重新登录失败，退出")
-                                            break
-                                    except Exception as e:
-                                        logger.error(f"重新登录失败: {e}，退出")
+                                    result = await self._relogin_check_residual()
+                                    if result is None:
                                         break
+                                    self._match1023_count = 0
+                                    continue
                             else:
                                 wait = min(30 * (2 ** (self._match1023_count - 1)), 120)
                                 logger.error(f"重连残留对局也失败，等 {wait} 秒再试...")
@@ -508,7 +501,6 @@ class MajsoulBot:
                     lvl = p.get("level", {})
                     lvl_id = lvl.get("id", 0)
                     lvl_score = lvl.get("score", 0)
-                    from client import format_rank
                     rank_str = format_rank(lvl_id, lvl_score) if lvl_id else "?"
                     me = " ★" if i == seat else ""
                     p_info.append(f"P{i}: {nick} [{rank_str}]{me}")
@@ -1204,17 +1196,16 @@ class MajsoulBot:
 
         # 和牌表情已在 action 决策时发送（先表情后点和牌），此处不重复
 
-        # 等一下再确认进入下一局
+        await self._end_round_and_confirm()
+
+    async def _end_round_and_confirm(self) -> None:
+        """等待人类延迟后确认进入下一局"""
         delay = self.human.get_new_round_delay()
         await asyncio.sleep(delay)
         try:
             await self.client.confirm_new_round()
         except Exception as e:
             logger.debug(f"confirm_new_round: {e}")
-
-    async def _send_win_emoji(self) -> None:
-        """和牌时发送表情庆祝"""
-        await self._send_emoji_for("win")
 
     async def _send_emoji_for(self, trigger: str) -> None:
         """通用表情发送，trigger: 'win' | 'riichi'"""
@@ -1258,12 +1249,7 @@ class MajsoulBot:
             self.ai.send_ryukyoku()
             self.ai.send_end_kyoku()
 
-        delay = self.human.get_new_round_delay()
-        await asyncio.sleep(delay)
-        try:
-            await self.client.confirm_new_round()
-        except Exception as e:
-            logger.debug(f"confirm_new_round: {e}")
+        await self._end_round_and_confirm()
 
     async def _handle_liuju(self, data: bytes) -> None:
         """中途流局 — 使用 ActionLiuJu"""
@@ -1280,12 +1266,7 @@ class MajsoulBot:
             self.ai.send_ryukyoku()
             self.ai.send_end_kyoku()
 
-        delay = self.human.get_new_round_delay()
-        await asyncio.sleep(delay)
-        try:
-            await self.client.confirm_new_round()
-        except Exception as e:
-            logger.debug(f"confirm_new_round: {e}")
+        await self._end_round_and_confirm()
 
     async def _on_game_end(self, data: bytes) -> None:
         """对局结束 — 使用 _action_lock 防止和 action handler 并发
