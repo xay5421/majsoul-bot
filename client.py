@@ -96,6 +96,7 @@ class MajsoulClient:
         self._game_state = ConnectionState.IDLE  # 对局状态（替代旧的 _in_game bool）
         self._connect_lock = asyncio.Lock()  # 防止并发连接 game server
         self._lobby_lock = asyncio.Lock()    # 防止并发重连 lobby
+        self._lobby_healthy = True                # lobby 心跳是否健康（最近一次成功）
         self._background_tasks: set[asyncio.Task] = set()  # 集中管理后台任务
 
     @property
@@ -243,8 +244,10 @@ class MajsoulClient:
         """
         async with self._lobby_lock:
             # 拿到锁后先检查——可能前一个重连已经完成了
-            if self.channel and self.channel.is_connected:
-                logger.info("lobby 已连接，跳过重连")
+            # 注意: is_connected 只检查 WebSocket 状态(OPEN)，不代表能收到响应
+            # 如果心跳连续失败（_lobby_healthy=False），即使 is_connected 也要强制重连
+            if self.channel and self.channel.is_connected and self._lobby_healthy:
+                logger.info("lobby 已连接且心跳正常，跳过重连")
                 return True
 
             logger.info("🔄 重连 lobby...")
@@ -816,11 +819,13 @@ class MajsoulClient:
                 await asyncio.wait_for(self.lobby.heatbeat(req), timeout=8)
                 logger.debug("心跳 OK (lobby)")
                 lobby_fail_count = 0
+                self._lobby_healthy = True
             except asyncio.CancelledError:
                 raise  # 让 task cancel 正常传播
             except Exception as e:
                 lobby_fail_count += 1
                 err_detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                self._lobby_healthy = False
                 logger.warning(f"心跳失败 (lobby, 连续{lobby_fail_count}次): {err_detail}")
                 if lobby_fail_count >= 5:
                     logger.error("lobby 心跳连续5次失败，尝试重连 lobby...")
@@ -970,6 +975,15 @@ class MajsoulClient:
 
         version_clean = self.version.replace(".w", "")
         logger.info(f"开始匹配: {desc} (match_sid={match_sid})")
+
+        # 匹配前检查 lobby 连接健康状态
+        if not self._lobby_healthy:
+            logger.warning("lobby 心跳不健康，先尝试重连再匹配...")
+            reconnected = await self.reconnect_lobby()
+            if not reconnected:
+                logger.error("lobby 重连失败，无法匹配")
+                return False
+            logger.info("lobby 重连成功，继续匹配")
 
         # 触发操作，重置无操作计数器
         self._no_op_counter = 0
